@@ -56,12 +56,6 @@ jobs:
             fi
           fi
 
-      - name: Confirm code version
-        run: |
-          echo "HEAD commit: $(git rev-parse HEAD)"
-          echo "--- first 10 lines of digest.py ---"
-          head -10 digest.py
-
       - name: Run AFL digest
         env:
           ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
