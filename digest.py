@@ -4,6 +4,7 @@
 import os
 import re
 import smtplib
+import time as _time
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -129,29 +130,49 @@ def get_thumbnail(entry) -> str:
     return ""
 
 
+def _parse_entry_date(entry) -> datetime | None:
+    """Return a UTC datetime for an RSS entry's publish time, or None."""
+    for field in ("published_parsed", "updated_parsed"):
+        val = getattr(entry, field, None)
+        if val:
+            try:
+                return datetime.fromtimestamp(_time.mktime(val), tz=timezone.utc)
+            except Exception:
+                pass
+    return None
+
+
 def fetch_rss_articles() -> list[dict]:
     articles = []
     for source, url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url, request_headers=HEADERS)
             for entry in feed.entries[:25]:
-                # Author: try author_detail first, fall back to author string
+                # Author: check every common location feedparser exposes
                 author = ""
                 if getattr(entry, "author_detail", None):
                     author = entry.author_detail.get("name", "")
                 if not author:
-                    author = entry.get("author", "")
+                    author = getattr(entry, "author", "")
+                if not author:
+                    # Some feeds use Dublin Core creator
+                    tags = getattr(entry, "tags", [])
+                    for t in tags:
+                        if t.get("scheme", "").endswith("creator"):
+                            author = t.get("term", "")
+                            break
 
                 articles.append({
                     "source":    source,
-                    "title":     entry.get("title", "").strip(),
+                    "title":     getattr(entry, "title", "").strip(),
                     "snippet":   re.sub(
                         r"<[^>]+>", "",
-                        entry.get("summary", entry.get("description", ""))[:400]
+                        getattr(entry, "summary", getattr(entry, "description", ""))[:400]
                     ).strip(),
-                    "link":      entry.get("link", ""),
+                    "link":      getattr(entry, "link", ""),
                     "author":    author.strip(),
                     "thumbnail": get_thumbnail(entry),
+                    "published": _parse_entry_date(entry),
                 })
         except Exception as exc:
             print(f"  RSS warning [{source}]: {exc}")
@@ -180,6 +201,34 @@ def filter_articles(articles: list[dict]) -> list[dict]:
     return result
 
 
+def filter_by_recency(articles: list[dict]) -> list[dict]:
+    """
+    Sort by publish date (newest first) and prefer articles from the last
+    8 hours — covering the gap since the previous digest run.
+    Falls back to all articles if fewer than 5 recent ones exist.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=8)
+
+    dated   = [a for a in articles if a.get("published")]
+    undated = [a for a in articles if not a.get("published")]
+
+    # Sort dated articles newest-first
+    dated.sort(key=lambda a: a["published"], reverse=True)
+
+    recent = [a for a in dated if a["published"] >= cutoff]
+    older  = [a for a in dated if a["published"] < cutoff]
+
+    if len(recent) >= 5:
+        print(f"      Recency filter: {len(recent)} articles from last 8h "
+              f"(+ {len(older)} older, {len(undated)} undated discarded)")
+        return recent + undated[:3]   # allow a few undated as padding
+    else:
+        # Not enough recent content — use everything but keep newest first
+        print(f"      Recency filter: only {len(recent)} recent — using all {len(articles)}")
+        return dated + undated
+
+
 def render_news_card(summary: str, article: dict) -> str:
     """Render a single news item as a card with link, byline, and optional thumbnail."""
     url    = article["link"]
@@ -195,7 +244,7 @@ def render_news_card(summary: str, article: dict) -> str:
         f'<a href="{url}" style="font-size:14px;font-weight:bold;color:#003087;'
         f'text-decoration:none;line-height:1.45;display:block;">{summary}</a>'
     )
-    meta = f'<p style="margin:5px 0 0 0;font-size:11px;color:#888888;line-height:1.4;">{byline}</p>'
+    meta = f'<p style="margin:5px 0 0 0;font-size:17px;color:#888888;line-height:1.4;">{byline}</p>'
 
     if thumb:
         return (
@@ -282,82 +331,55 @@ def summarise_news(articles: list[dict], client: anthropic.Anthropic) -> str:
 # ---------------------------------------------------------------------------
 
 def fetch_reddit_threads() -> list[dict]:
-    url = "https://www.reddit.com/r/AFL/hot.json?limit=10"
+    url = "https://www.reddit.com/r/AFL/hot.json?limit=15"
     try:
         resp = requests.get(url, headers=REDDIT_HEADERS, timeout=15)
         resp.raise_for_status()
-        posts = resp.json()["data"]["children"]
         threads = []
-        for post in posts[:5]:
+        for post in resp.json()["data"]["children"]:
             p = post["data"]
+            if p.get("stickied"):          # skip mod/pinned posts
+                continue
             threads.append({
                 "title":    p.get("title", ""),
                 "comments": p.get("num_comments", 0),
                 "score":    p.get("score", 0),
-                "flair":    p.get("link_flair_text", ""),
+                "flair":    p.get("link_flair_text", "") or "",
+                "url":      f"https://www.reddit.com{p.get('permalink', '')}",
             })
+            if len(threads) == 5:
+                break
         return threads
     except Exception as exc:
         print(f"  Reddit warning: {exc}")
         return []
 
 
-def fetch_bigfooty_threads() -> list[dict]:
-    """Scrape BigFooty forum index. Fails silently if blocked or unavailable."""
-    try:
-        resp = requests.get(
-            "https://www.bigfooty.com/forum/",
-            headers=HEADERS,
-            timeout=10,
+def render_forum_section(reddit: list[dict]) -> str:
+    """Render Reddit hot threads directly — no Claude summarisation needed."""
+    if not reddit:
+        return "<p style='font-size:14px;color:#555;'>No Reddit threads available this period.</p>"
+
+    items = []
+    for t in reddit:
+        flair_html = ""
+        if t["flair"]:
+            flair_html = (
+                f' <span style="font-size:11px;color:#ffffff;background:#003087;'
+                f'border-radius:3px;padding:1px 5px;vertical-align:middle;">'
+                f'{t["flair"]}</span>'
+            )
+        items.append(
+            f'<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #eeeeee;">'
+            f'<a href="{t["url"]}" style="font-size:14px;font-weight:bold;color:#003087;'
+            f'text-decoration:none;line-height:1.4;display:block;">'
+            f'{t["title"]}</a>{flair_html}'
+            f'<p style="margin:5px 0 0 0;font-size:12px;color:#888888;">'
+            f'r/AFL &nbsp;&middot;&nbsp; {t["comments"]:,} comments &nbsp;&middot;&nbsp; '
+            f'{t["score"]:,} upvotes</p>'
+            f'</div>'
         )
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        threads = []
-        for sel in ("a.structItem-title", "h3.structItem-title a", "a[href*='/threads/']"):
-            for tag in soup.select(sel)[:10]:
-                title = tag.get_text(strip=True)
-                if title and len(title) > 15:
-                    threads.append({"title": title, "url": tag.get("href", "")})
-            if threads:
-                break
-        return threads[:5]
-    except Exception:
-        return []
-
-
-def summarise_forum_buzz(
-    reddit: list[dict],
-    bigfooty: list[dict],
-    client: anthropic.Anthropic,
-) -> str:
-    if not reddit and not bigfooty:
-        return "<p>No forum data available this period.</p>"
-
-    lines = []
-    if reddit:
-        lines.append("Reddit r/AFL — hottest threads:")
-        for t in reddit:
-            flair = f" [{t['flair']}]" if t["flair"] else ""
-            lines.append(f"  • {t['title']}{flair} — {t['comments']} comments, score {t['score']}")
-    if bigfooty:
-        lines.append("\nBigFooty — trending threads:")
-        for t in bigfooty:
-            lines.append(f"  • {t['title']}")
-
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=600,
-        system=(
-            "You are an AFL analyst watching fan discussion. "
-            "Summarise these forum threads into 3–5 bullet points. "
-            "For each bullet: name the topic and note the general fan sentiment "
-            "(excited, frustrated, divided, etc.). "
-            "Return ONLY a valid HTML <ul> element with 3–5 <li> items. "
-            "No markdown. No code fences. No surrounding text."
-        ),
-        messages=[{"role": "user", "content": "\n".join(lines)}],
-    )
-    return clean_claude_html(response.content[0].text)
+    return "\n".join(items)
 
 
 # ---------------------------------------------------------------------------
@@ -375,15 +397,17 @@ def fetch_web_catchall(client: anthropic.Anthropic) -> str | None:
         "breaking stories, controversies, viral content, player social media incidents, "
         "or under-reported news. "
         "If you find nothing genuinely novel or significant, output only the single word: NOTHING. "
-        "Otherwise output ONLY a valid HTML <ul> with 3–5 <li> bullet points. "
-        "No markdown. No code fences. No surrounding text."
+        "Otherwise output ONLY a valid HTML <ul> with 3–5 <li> items. "
+        "Each <li> must be short: a bold headline phrase, then a single sentence of context. "
+        "Maximum two lines per item. No markdown. No code fences. No surrounding text."
     )
     user_prompt = (
-        "Search for any significant AFL news from the past 6 hours not covered by "
+        "Search for significant AFL news from the past 6 hours not covered by "
         "AFL.com.au, Fox Footy, The Age, or Herald Sun RSS feeds. "
-        "Think: breaking controversies, viral moments, social media stories, "
-        "or anything the mainstream AFL media is slow on. "
-        "If nothing novel, reply NOTHING."
+        "Breaking controversies, viral moments, social media stories, "
+        "anything mainstream AFL media is slow on. "
+        "Keep each finding to: bold headline + one sentence max. "
+        "If nothing novel found, reply NOTHING."
     )
 
     messages: list[dict] = [{"role": "user", "content": user_prompt}]
@@ -501,25 +525,25 @@ def build_email_html(
             <td style="padding:0 28px;">
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
 
-                <!-- Section 1: News & Transfers -->
+                <!-- Section 1: Top Stories -->
                 <tr>
                   <td style="padding:22px 0 8px 0;">
                     <h2 style="margin:0 0 16px 0;font-size:16px;font-weight:bold;
                                color:#003087;text-transform:uppercase;letter-spacing:0.05em;">
-                      News &amp; Transfers
+                      Top Stories
                     </h2>
                     {news_html}
                   </td>
                 </tr>
 
-                <!-- Section 2: Fan Buzz -->
+                <!-- Section 2: Fan Forums -->
                 <tr>
                   <td style="padding:20px 0 8px 0;border-top:1px solid #eeeeee;">
                     <h2 style="margin:0 0 14px 0;font-size:16px;font-weight:bold;
                                color:#003087;text-transform:uppercase;letter-spacing:0.05em;">
-                      Fan Buzz
+                      Fan Forums
                     </h2>
-                    {style_list(forum_html)}
+                    {forum_html}
                   </td>
                 </tr>
 
@@ -572,7 +596,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v4"   # bump this each deploy so we can confirm which code ran
+SCRIPT_VERSION = "v5"
 
 
 def main() -> None:
@@ -587,22 +611,20 @@ def main() -> None:
     print("[1/5] Fetching RSS feeds...")
     raw      = fetch_rss_articles()
     filtered = filter_articles(raw)
-    print(f"      {len(raw)} fetched → {len(filtered)} after filtering")
+    recent   = filter_by_recency(filtered)
+    print(f"      {len(raw)} fetched → {len(filtered)} filtered → {len(recent)} recent")
 
     print("[2/5] Summarising news with Claude...")
-    news_html = summarise_news(filtered, client)
+    news_html = summarise_news(recent, client)
 
     # ── Section 2 ──
-    print("[3/5] Fetching forum threads...")
-    reddit   = fetch_reddit_threads()
-    bigfooty = fetch_bigfooty_threads()
-    print(f"      Reddit: {len(reddit)} threads | BigFooty: {len(bigfooty)} threads")
-
-    print("[4/5] Summarising forum buzz with Claude...")
-    forum_html = summarise_forum_buzz(reddit, bigfooty, client)
+    print("[3/5] Fetching Reddit threads...")
+    reddit     = fetch_reddit_threads()
+    print(f"      {len(reddit)} threads")
+    forum_html = render_forum_section(reddit)
 
     # ── Section 3 ──
-    print("[5/5] Running web catch-all search with Claude...")
+    print("[4/4] Running web catch-all search with Claude...")
     web_html = fetch_web_catchall(client)
     if web_html:
         print("      Novel content found — including section 3")
