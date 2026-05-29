@@ -534,7 +534,7 @@ def build_email_html(
             <td style="background-color:#f8f9fb;padding:14px 28px;
                        border-top:1px solid #e8eaed;">
               <p style="margin:0;font-size:11px;color:#999999;">
-                Automated AFL Digest &middot; Generated {generated}
+                Automated AFL Digest &middot; Generated {generated} &middot; {SCRIPT_VERSION}
               </p>
             </td>
           </tr>
@@ -572,13 +572,16 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+SCRIPT_VERSION = "v4"   # bump this each deploy so we can confirm which code ran
+
+
 def main() -> None:
     client    = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     now_aest  = datetime.now(AEST)
     time_slot = get_time_slot()
 
     day_date = now_aest.strftime("%A %-d %B")
-    print(f"\n=== AFL Digest — {time_slot} — {day_date} ===\n")
+    print(f"\n=== AFL Digest {SCRIPT_VERSION} — {time_slot} — {day_date} ===\n")
 
     # ── Section 1 ──
     print("[1/5] Fetching RSS feeds...")
