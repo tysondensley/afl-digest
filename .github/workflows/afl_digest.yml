@@ -6,12 +6,14 @@ on:
     # Schedules below use AEST (UTC+10). During AEDT the digest arrives 1 hour late —
     # acceptable without managing two overlapping cron sets.
     #
-    #  6:15 am AEST (20:15 UTC prev day)
+    #  6:15 am AEST (20:15 UTC prev day)  → Morning
     - cron: '15 20 * * *'
-    # 12:00 pm AEST (02:00 UTC)
+    # 12:00 pm AEST (02:00 UTC)           → Midday
     - cron: '0 2 * * *'
-    #  4:30 pm AEST (06:30 UTC)
+    #  4:30 pm AEST (06:30 UTC)           → Afternoon
     - cron: '30 6 * * *'
+    #  9:00 pm AEST (11:00 UTC)           → Evening
+    - cron: '0 11 * * *'
 
   workflow_dispatch:
     inputs:
@@ -21,9 +23,10 @@ on:
         default: 'Midday'
         type: choice
         options:
-          - 6am
+          - Morning
           - Midday
-          - End of Day
+          - Afternoon
+          - Evening
 
 jobs:
   send-digest:
@@ -50,9 +53,10 @@ jobs:
             echo "TIME_SLOT=${{ github.event.inputs.time_slot }}" >> "$GITHUB_ENV"
           else
             HOUR=$(date -u +%H)
-            if   [ "$HOUR" -eq 20 ]; then echo "TIME_SLOT=6am"        >> "$GITHUB_ENV"
-            elif [ "$HOUR" -eq 2  ]; then echo "TIME_SLOT=Midday"     >> "$GITHUB_ENV"
-            else                          echo "TIME_SLOT=End of Day"  >> "$GITHUB_ENV"
+            if   [ "$HOUR" -eq 20 ]; then echo "TIME_SLOT=Morning"   >> "$GITHUB_ENV"
+            elif [ "$HOUR" -eq 2  ]; then echo "TIME_SLOT=Midday"    >> "$GITHUB_ENV"
+            elif [ "$HOUR" -eq 6  ]; then echo "TIME_SLOT=Afternoon" >> "$GITHUB_ENV"
+            else                          echo "TIME_SLOT=Evening"   >> "$GITHUB_ENV"
             fi
           fi
 
