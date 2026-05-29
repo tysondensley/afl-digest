@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """AFL news digest — fetches RSS, forum threads, and web search, then emails a summary."""
 
-import json
 import os
 import re
 import smtplib
@@ -86,13 +85,18 @@ def get_time_slot() -> str:
 
 def clean_claude_html(text: str) -> str:
     """
-    Strip markdown code fences that Claude sometimes wraps around HTML/JSON output.
-    e.g. ```html\\n<ul>...</ul>\\n``` → <ul>...</ul>
+    Strip markdown code fences that Claude sometimes wraps around output.
+    Handles: ```html, ```json, ```, and any stray backtick lines.
     """
     text = text.strip()
-    text = re.sub(r"^```(?:html|json)?\s*\n?", "", text)
-    text = re.sub(r"\n?```\s*$", "", text)
-    return text.strip()
+    # Remove opening fence line (```html, ```json, ``` etc.)
+    text = re.sub(r"^`{3}[a-zA-Z]*\s*\n", "", text)
+    # Remove closing fence line
+    text = re.sub(r"\n`{3}\s*$", "", text)
+    # Catch any remaining lone ``` at start or end
+    text = re.sub(r"^`{3}", "", text).strip()
+    text = re.sub(r"`{3}$", "", text).strip()
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -176,97 +180,99 @@ def filter_articles(articles: list[dict]) -> list[dict]:
     return result
 
 
+def render_news_card(summary: str, article: dict) -> str:
+    """Render a single news item as a card with link, byline, and optional thumbnail."""
+    url    = article["link"]
+    source = article["source"]
+    author = article.get("author", "")
+    thumb  = article.get("thumbnail", "")
+
+    byline = f'<span style="font-weight:600;">{source}</span>'
+    if author:
+        byline += f' &middot; <span style="font-style:italic;">{author}</span>'
+
+    link = (
+        f'<a href="{url}" style="font-size:14px;font-weight:bold;color:#003087;'
+        f'text-decoration:none;line-height:1.45;display:block;">{summary}</a>'
+    )
+    meta = f'<p style="margin:5px 0 0 0;font-size:11px;color:#888888;line-height:1.4;">{byline}</p>'
+
+    if thumb:
+        return (
+            f'<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"'
+            f' style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
+            f'<tr>'
+            f'<td width="76" valign="top" style="padding-right:14px;">'
+            f'<a href="{url}" style="display:block;">'
+            f'<img src="{thumb}" width="76" height="76" alt=""'
+            f' style="border-radius:6px;display:block;width:76px;height:76px;object-fit:cover;border:0;">'
+            f'</a></td>'
+            f'<td valign="top">{link}{meta}</td>'
+            f'</tr></table>'
+        )
+    else:
+        return (
+            f'<div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
+            f'{link}{meta}</div>'
+        )
+
+
 def summarise_news(articles: list[dict], client: anthropic.Anthropic) -> str:
     """
-    Ask Claude to pick the 7 best stories and return structured JSON.
-    We render the final HTML ourselves so we control links, source, author, thumbnail.
+    Ask Claude to pick and summarise the 7 best stories using a simple
+    INDEX|SUMMARY pipe format — reliable, no JSON or HTML for Claude to mangle.
+    We look up source / author / link / thumbnail from our own data by index.
     """
     if not articles:
         return "<p>No relevant news found in this period.</p>"
 
-    items_input = [
-        {
-            "id":      i,
-            "source":  a["source"],
-            "author":  a["author"],
-            "url":     a["link"],
-            "title":   a["title"],
-            "snippet": a["snippet"],
-        }
-        for i, a in enumerate(articles[:30])
-    ]
+    pool = articles[:20]
+    numbered = "\n".join(
+        f"[{i}] {a['title']} — {a['snippet'][:180]}"
+        for i, a in enumerate(pool)
+    )
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=2000,
+        max_tokens=800,
         system=(
-            "You are a senior AFL editor. From the articles provided, select the 7 most newsworthy.\n"
-            "Focus on: trades, injuries, signings, contracts, suspensions, breaking news.\n"
-            "Exclude: match scores, results, club promotional content.\n"
-            "Return a JSON array of exactly 7 objects. Each object must have these exact keys:\n"
-            '  "summary" — one clear sentence summarising the story (plain text, no HTML)\n'
-            '  "source"  — copy the source field exactly as provided\n'
-            '  "author"  — copy the author field exactly as provided (empty string if blank)\n'
-            '  "url"     — copy the url field exactly as provided\n'
-            "Return ONLY the raw JSON array. No markdown. No code fences. No explanation."
+            "You are a senior AFL editor. From the numbered articles below, pick the 7 most "
+            "newsworthy (trades, injuries, signings, contracts, suspensions — NOT match results "
+            "or club PR).\n\n"
+            "Return EXACTLY 7 lines. Each line must follow this format:\n"
+            "INDEX|One sentence summary of the story.\n\n"
+            "Example output:\n"
+            "2|Geelong have re-signed key defender Sam Taylor after injury concerns.\n"
+            "5|Carlton confirm a four-person panel to select Michael Voss's replacement.\n\n"
+            "Rules:\n"
+            "- No other text, no headings, no blank lines, no markdown, no HTML.\n"
+            "- INDEX is the number in square brackets from the input.\n"
+            "- Summary is plain text only, one sentence."
         ),
-        messages=[{"role": "user", "content": json.dumps(items_input, ensure_ascii=False)}],
+        messages=[{"role": "user", "content": numbered}],
     )
 
-    raw = clean_claude_html(response.content[0].text)
-
-    try:
-        selected = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        # Graceful fallback — render Claude's raw text as a plain paragraph
-        return f'<p style="font-size:14px;color:#333;line-height:1.6;">{raw}</p>'
-
-    # Build a URL → thumbnail lookup from the original fetched articles
-    thumb_map = {a["link"]: a["thumbnail"] for a in articles}
+    raw = response.content[0].text.strip()
+    print(f"  Claude news raw response:\n{raw}\n")
 
     cards: list[str] = []
-    for item in selected[:7]:
-        summary = item.get("summary", "").strip()
-        source  = item.get("source", "").strip()
-        author  = item.get("author", "").strip()
-        url     = item.get("url", "#").strip()
-        thumb   = thumb_map.get(url, "")
+    for line in raw.splitlines():
+        line = line.strip()
+        if "|" not in line:
+            continue
+        idx_str, _, summary = line.partition("|")
+        # Strip any stray brackets, spaces, bullets
+        idx_str = re.sub(r"[^\d]", "", idx_str)
+        summary = summary.strip()
+        if not idx_str or not summary:
+            continue
+        idx = int(idx_str)
+        if 0 <= idx < len(pool):
+            cards.append(render_news_card(summary, pool[idx]))
 
-        byline  = f'<span style="font-weight:600;">{source}</span>'
-        if author:
-            byline += f' &middot; <span style="font-style:italic;">{author}</span>'
-
-        link_open  = f'<a href="{url}" style="font-size:14px;font-weight:bold;color:#003087;text-decoration:none;line-height:1.45;display:block;">'
-        link_close = "</a>"
-        meta       = f'<p style="margin:5px 0 0 0;font-size:11px;color:#888888;line-height:1.4;">{byline}</p>'
-
-        if thumb:
-            card = (
-                f'<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"'
-                f' style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
-                f'<tr>'
-                f'<td width="76" valign="top" style="padding-right:14px;">'
-                f'<a href="{url}" style="display:block;">'
-                f'<img src="{thumb}" width="76" height="76" alt="" style="border-radius:6px;display:block;'
-                f'width:76px;height:76px;object-fit:cover;border:0;">'
-                f'</a>'
-                f'</td>'
-                f'<td valign="top">'
-                f'{link_open}{summary}{link_close}'
-                f'{meta}'
-                f'</td>'
-                f'</tr>'
-                f'</table>'
-            )
-        else:
-            card = (
-                f'<div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
-                f'{link_open}{summary}{link_close}'
-                f'{meta}'
-                f'</div>'
-            )
-
-        cards.append(card)
+    if not cards:
+        print("  Warning: no cards parsed — falling back to plain list")
+        return "<p>News summarisation unavailable this period.</p>"
 
     return "\n".join(cards)
 
