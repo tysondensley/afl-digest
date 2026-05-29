@@ -60,30 +60,39 @@ That's it — all the files in the folder (including hidden ones like the `.gith
 
 ### 2. Generate a Gmail App Password
 
-App Passwords let GitHub Actions send mail on your behalf without using your real password.
+An App Password is a special one-time code that lets GitHub send emails from your Gmail without using your real password.
 
-1. Go to your Google Account → **Security**
-2. Under "How you sign in to Google", ensure **2-Step Verification** is enabled
-3. Go to **Security → 2-Step Verification → App passwords** (scroll to the bottom)
-   - Direct link: https://myaccount.google.com/apppasswords
-4. Choose app: **Mail** | Device: **Other (custom name)** → type `AFL Digest`
-5. Click **Generate** — copy the 16-character password shown (e.g. `abcd efgh ijkl mnop`)
-6. Store it somewhere safe; you won't see it again
+1. Go to https://myaccount.google.com/apppasswords (sign in if prompted)
+   - If you get an error saying the page doesn't exist, you need to turn on 2-Step Verification first: go to https://myaccount.google.com/signinoptions/two-step-verification and follow the prompts, then come back here
+2. You'll see a text field that says **"App name"** — type `AFL Digest` and click **Create**
+3. Google will show you a 16-character password in a box (e.g. `abcd efgh ijkl mnop`) — copy it now
+4. Store it somewhere safe (e.g. Notes app); you won't be able to see it again
 
-### 3. Add GitHub Actions secrets
+### 3. Get your Anthropic API key
 
-In your repository on GitHub:
+This is what authorises Claude to summarise the news. You may already have one — if so, skip to step 4.
 
-1. Go to **Settings → Secrets and variables → Actions**
-2. Click **New repository secret** and add each of the following:
+1. Go to https://console.anthropic.com and sign in (or create a free account)
+2. Click **API Keys** in the left sidebar
+3. Click **Create Key**, give it a name like `AFL Digest`, and click **Create Key**
+4. Copy the key shown (it starts with `sk-ant-`) — store it alongside your Gmail App Password
 
-| Secret name | Value |
+### 4. Add the secrets to GitHub
+
+These three values need to be stored securely in your GitHub repository so the scheduled workflow can use them.
+
+1. Go to your `afl-digest` repository on GitHub
+2. Click **Settings** (top navigation bar, far right)
+3. In the left sidebar, click **Secrets and variables → Actions**
+4. Click **New repository secret** and add each of the following — one at a time:
+
+| Secret name | Value to paste |
 |---|---|
 | `ANTHROPIC_API_KEY` | Your Anthropic API key (starts with `sk-ant-`) |
 | `GMAIL_USER` | Your Gmail address, e.g. `you@gmail.com` |
-| `GMAIL_APP_PASSWORD` | The 16-character App Password from step 2 (spaces optional) |
+| `GMAIL_APP_PASSWORD` | The 16-character App Password from step 2 |
 
-### 4. Enable Actions (if needed)
+### 5. Enable Actions (if needed)
 
 If this is a new repo, GitHub may ask you to enable Actions. Go to the **Actions** tab and click **I understand my workflows, go ahead and enable them**.
 
