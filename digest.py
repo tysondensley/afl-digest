@@ -23,9 +23,12 @@ AEST = timezone(timedelta(hours=10))
 
 RSS_FEEDS = [
     ("AFL.com.au",   "https://www.afl.com.au/rss"),
-    ("Fox Footy",    "https://www.foxsports.com.au/feed/sport/afl"),
     ("The Age AFL",  "https://www.theage.com.au/rss/sport/afl.xml"),
-    ("Herald Sun",   "https://www.heraldsun.com.au/heraldsun/feeds/rss/sport/afl"),
+    ("The Guardian", "https://www.theguardian.com/sport/afl/rss"),
+    # Herald Sun and Fox Sports block direct RSS scraping (paywall/bot protection).
+    # Google News RSS proxies their headlines without hitting the paywall.
+    ("Herald Sun",   "https://news.google.com/rss/search?q=AFL+site:heraldsun.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
+    ("Fox Footy",    "https://news.google.com/rss/search?q=AFL+site:foxsports.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
 ]
 
 HEADERS = {
@@ -181,9 +184,14 @@ def fetch_rss_articles() -> list[dict]:
                             author = t.get("term", "")
                             break
 
+                raw_title = getattr(entry, "title", "").strip()
+                # Google News appends " - Source Name" to every title — strip it
+                if " - " in raw_title:
+                    raw_title = raw_title.rsplit(" - ", 1)[0].strip()
+
                 articles.append({
                     "source":    source,
-                    "title":     getattr(entry, "title", "").strip(),
+                    "title":     raw_title,
                     "snippet":   re.sub(
                         r"<[^>]+>", "",
                         getattr(entry, "summary", getattr(entry, "description", ""))[:400]

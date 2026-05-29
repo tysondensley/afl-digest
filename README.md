@@ -134,9 +134,10 @@ If a feed stops working, update the `RSS_FEEDS` list at the top of `digest.py`:
 | Source | URL |
 |---|---|
 | AFL.com.au | `https://www.afl.com.au/rss` |
-| Fox Footy | `https://www.foxsports.com.au/feed/sport/afl` |
 | The Age AFL | `https://www.theage.com.au/rss/sport/afl.xml` |
-| Herald Sun AFL | `https://www.heraldsun.com.au/heraldsun/feeds/rss/sport/afl` |
+| The Guardian AFL | `https://www.theguardian.com/sport/afl/rss` |
+| Herald Sun (via Google News) | `https://news.google.com/rss/search?q=AFL+site:heraldsun.com.au&hl=en-AU&gl=AU&ceid=AU:en` |
+| Fox Footy (via Google News) | `https://news.google.com/rss/search?q=AFL+site:foxsports.com.au&hl=en-AU&gl=AU&ceid=AU:en` |
 
 ---
 
