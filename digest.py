@@ -192,6 +192,9 @@ def fetch_rss_articles(feeds: list[tuple]) -> list[dict]:
                 if " - " in raw_title:
                     raw_title = raw_title.rsplit(" - ", 1)[0].strip()
 
+                # Strip leading "by " / "By " that some feeds include
+                author = re.sub(r"(?i)^by\s+", "", author.strip()).strip()
+
                 articles.append({
                     "source":    source,
                     "title":     raw_title,
@@ -200,7 +203,7 @@ def fetch_rss_articles(feeds: list[tuple]) -> list[dict]:
                         getattr(entry, "summary", getattr(entry, "description", ""))[:400]
                     ).strip(),
                     "link":      getattr(entry, "link", ""),
-                    "author":    author.strip(),
+                    "author":    author,
                     "thumbnail": get_thumbnail(entry),
                     "published": _parse_entry_date(entry),
                 })
@@ -320,7 +323,7 @@ def enrich_authors(articles: list[dict]) -> list[dict]:
 # News card rendering
 # ---------------------------------------------------------------------------
 
-def render_news_card(summary: str, article: dict) -> str:
+def render_news_card(summary: str, article: dict, bold_title: bool = True) -> str:
     """Render a single news item as a card with link, byline, and optional thumbnail."""
     url    = article["link"]
     source = article["source"]
@@ -331,8 +334,9 @@ def render_news_card(summary: str, article: dict) -> str:
     if author:
         byline += f' &middot; <span style="font-style:italic;">{author}</span>'
 
+    title_weight = "bold" if bold_title else "normal"
     link = (
-        f'<a href="{url}" style="font-size:14px;font-weight:bold;color:#003087;'
+        f'<a href="{url}" style="font-size:14px;font-weight:{title_weight};color:#003087;'
         f'text-decoration:none;line-height:1.45;display:block;">{summary}</a>'
     )
     meta = (
@@ -425,10 +429,13 @@ def summarise_media_news(articles: list[dict], client: anthropic.Anthropic) -> s
             "- OPINION and ANALYSIS pieces with a strong take or original argument\n"
             "- INVESTIGATIONS, controversies, and governance stories\n"
             "- Injury updates, trade whispers, and contract news\n\n"
-            "DEPRIORITISE:\n"
-            "- Rewrites or aggregations of stories already broken by other outlets\n"
-            "- Generic match previews and round summaries\n"
-            "- Club PR and promotional content\n\n"
+            "REJECT any story where:\n"
+            "- AFL, a club, player, or official is only a minor or incidental mention\n"
+            "  (e.g. a business story that names an ex-player as a peripheral investor)\n"
+            "- The story is primarily about another sport, industry, or topic\n"
+            "- It is a rewrite or aggregation of a story already broken by another outlet\n"
+            "- It is a generic match preview, round summary, or club PR\n\n"
+            "Only include a story if AFL football is the PRIMARY subject.\n\n"
             "Return EXACTLY 6–7 lines in this format:\n"
             "INDEX|One sentence summary.\n\n"
             "Rules: no other text, no headings, no blank lines, no markdown, no HTML. "
@@ -439,10 +446,10 @@ def summarise_media_news(articles: list[dict], client: anthropic.Anthropic) -> s
 
     raw = response.content[0].text.strip()
     print(f"  Claude media news raw:\n{raw}\n")
-    return _parse_index_pipe_response(raw, pool)
+    return _parse_index_pipe_response(raw, pool, bold_title=False)
 
 
-def _parse_index_pipe_response(raw: str, pool: list[dict]) -> str:
+def _parse_index_pipe_response(raw: str, pool: list[dict], bold_title: bool = True) -> str:
     """Parse Claude's INDEX|SUMMARY lines into rendered news cards."""
     cards: list[str] = []
     for line in raw.splitlines():
@@ -456,7 +463,7 @@ def _parse_index_pipe_response(raw: str, pool: list[dict]) -> str:
             continue
         idx = int(idx_str)
         if 0 <= idx < len(pool):
-            cards.append(render_news_card(summary, pool[idx]))
+            cards.append(render_news_card(summary, pool[idx], bold_title=bold_title))
 
     if not cards:
         print("  Warning: no cards parsed — falling back")
@@ -689,13 +696,12 @@ def build_email_html(
 
           <!-- ── Header ── -->
           <tr>
-            <td style="background-color:#003087;padding:24px 28px 20px 28px;">
+            <td style="background-color:#003087;padding:18px 28px 16px 28px;">
               <p style="margin:0;font-size:11px;font-weight:bold;color:#7faad4;
                          text-transform:uppercase;letter-spacing:0.1em;">AFL News Digest</p>
-              <h1 style="margin:4px 0 0 0;font-size:26px;font-weight:bold;color:#ffffff;">
-                {time_slot}
+              <h1 style="margin:5px 0 0 0;font-size:22px;font-weight:bold;color:#ffffff;line-height:1.3;">
+                {time_slot} &nbsp;&middot;&nbsp; {day_date}
               </h1>
-              <p style="margin:4px 0 0 0;font-size:13px;color:#a8c4e0;">{day_date}</p>
             </td>
           </tr>
 
@@ -751,7 +757,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v7"
+SCRIPT_VERSION = "v8"
 
 
 def main() -> None:
