@@ -21,20 +21,29 @@ import anthropic
 
 AEST = timezone(timedelta(hours=10))
 
-RSS_FEEDS = [
-    ("AFL.com.au",   "https://www.afl.com.au/rss"),
-    ("The Age AFL",  "https://www.theage.com.au/rss/sport/afl.xml"),
-    ("The Guardian", "https://www.theguardian.com/sport/afl/rss"),
-    # Herald Sun and Fox Sports block direct RSS scraping (paywall/bot protection).
-    # Google News RSS proxies their headlines without hitting the paywall.
-    ("Herald Sun",   "https://news.google.com/rss/search?q=AFL+site:heraldsun.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
-    ("Fox Footy",    "https://news.google.com/rss/search?q=AFL+site:foxsports.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
+# AFL's own feed — gets its own dedicated section
+AFL_OFFICIAL_FEEDS = [
+    ("AFL.com.au", "https://www.afl.com.au/rss"),
+]
+
+# Media outlets — pooled into a single "Other Media" section.
+# Direct RSS blocked for Herald Sun / Fox Footy / paywalled outlets;
+# Google News RSS proxies their headlines without hitting the paywall.
+OTHER_MEDIA_FEEDS = [
+    ("The Age",          "https://www.theage.com.au/rss/sport/afl.xml"),
+    ("The Guardian",     "https://www.theguardian.com/sport/afl/rss"),
+    ("Herald Sun",       "https://news.google.com/rss/search?q=AFL+site:heraldsun.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
+    ("Fox Footy",        "https://news.google.com/rss/search?q=AFL+site:foxsports.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
+    ("ABC News",         "https://news.google.com/rss/search?q=AFL+site:abc.net.au&hl=en-AU&gl=AU&ceid=AU:en"),
+    ("SEN",              "https://news.google.com/rss/search?q=AFL+site:sen.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
+    ("The Australian",   "https://news.google.com/rss/search?q=AFL+site:theaustralian.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
+    ("AFR",              "https://news.google.com/rss/search?q=AFL+site:afr.com&hl=en-AU&gl=AU&ceid=AU:en"),
 ]
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; AFL-Digest/1.0; "
-        "+https://github.com/tysondensley/afl-digest)"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 }
 
@@ -58,7 +67,8 @@ _INCLUDE_RE = re.compile(
     r"\b("
     r"trade[sd]?|trading|injur(y|ies|ed)|sign(ing|ed|s)?|contract|"
     r"suspension|suspended|deregistered|delisted|draft|recruit|"
-    r"breaking|exclusive|interview|investigation|reveals?|confirms?"
+    r"breaking|exclusive|interview|investigation|reveals?|confirms?|"
+    r"opinion|analysis|verdict|verdict"
     r")\b",
     re.IGNORECASE,
 )
@@ -66,7 +76,7 @@ _INCLUDE_RE = re.compile(
 RECIPIENT = "Tyson.Densley@afl.com.au"
 MODEL     = "claude-sonnet-4-6"
 
-# AFL journalists to monitor on X for the Journalist Tweets section
+# AFL journalists to monitor on X for the Journo Top Tweets section
 JOURNALISTS = [
     ("Cal Twomey",      "@CalTwomey"),
     ("Mitch Cleary",    "@mitchcleary"),
@@ -107,23 +117,17 @@ def get_time_slot() -> str:
 # ---------------------------------------------------------------------------
 
 def clean_claude_html(text: str) -> str:
-    """
-    Strip markdown code fences that Claude sometimes wraps around output.
-    Handles: ```html, ```json, ```, and any stray backtick lines.
-    """
+    """Strip markdown code fences that Claude sometimes wraps around output."""
     text = text.strip()
-    # Remove opening fence line (```html, ```json, ``` etc.)
     text = re.sub(r"^`{3}[a-zA-Z]*\s*\n", "", text)
-    # Remove closing fence line
     text = re.sub(r"\n`{3}\s*$", "", text)
-    # Catch any remaining lone ``` at start or end
     text = re.sub(r"^`{3}", "", text).strip()
     text = re.sub(r"`{3}$", "", text).strip()
     return text
 
 
 # ---------------------------------------------------------------------------
-# Section 1 — RSS news
+# RSS fetching & filtering (shared by both sections)
 # ---------------------------------------------------------------------------
 
 def get_thumbnail(entry) -> str:
@@ -142,7 +146,6 @@ def get_thumbnail(entry) -> str:
             for enc in entry.enclosures:
                 if enc.get("type", "").startswith("image"):
                     return enc.get("href", enc.get("url", ""))
-        # Some feeds put images in links
         if getattr(entry, "links", None):
             for link in entry.links:
                 if link.get("type", "").startswith("image"):
@@ -164,9 +167,10 @@ def _parse_entry_date(entry) -> datetime | None:
     return None
 
 
-def fetch_rss_articles() -> list[dict]:
+def fetch_rss_articles(feeds: list[tuple]) -> list[dict]:
+    """Fetch and parse RSS articles from a list of (source, url) tuples."""
     articles = []
-    for source, url in RSS_FEEDS:
+    for source, url in feeds:
         try:
             feed = feedparser.parse(url, request_headers=HEADERS)
             for entry in feed.entries[:25]:
@@ -177,7 +181,6 @@ def fetch_rss_articles() -> list[dict]:
                 if not author:
                     author = getattr(entry, "author", "")
                 if not author:
-                    # Some feeds use Dublin Core creator
                     tags = getattr(entry, "tags", [])
                     for t in tags:
                         if t.get("scheme", "").endswith("creator"):
@@ -228,33 +231,35 @@ def filter_articles(articles: list[dict]) -> list[dict]:
     return result
 
 
-def filter_by_recency(articles: list[dict]) -> list[dict]:
+def filter_by_recency(articles: list[dict], label: str = "") -> list[dict]:
     """
-    Sort by publish date (newest first) and prefer articles from the last
-    8 hours — covering the gap since the previous digest run.
+    Sort by publish date (newest first) and prefer articles from the last 10 hours.
     Falls back to all articles if fewer than 5 recent ones exist.
     """
-    now = datetime.now(timezone.utc)
+    now    = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=10)
 
     dated   = [a for a in articles if a.get("published")]
     undated = [a for a in articles if not a.get("published")]
 
-    # Sort dated articles newest-first
     dated.sort(key=lambda a: a["published"], reverse=True)
 
     recent = [a for a in dated if a["published"] >= cutoff]
-    older  = [a for a in dated if a["published"] < cutoff]
+    older  = [a for a in dated if a["published"] <  cutoff]
 
+    tag = f" [{label}]" if label else ""
     if len(recent) >= 5:
-        print(f"      Recency filter: {len(recent)} articles from last 8h "
+        print(f"      Recency{tag}: {len(recent)} from last 10h "
               f"(+ {len(older)} older, {len(undated)} undated discarded)")
-        return recent + undated[:3]   # allow a few undated as padding
+        return recent + undated[:3]
     else:
-        # Not enough recent content — use everything but keep newest first
-        print(f"      Recency filter: only {len(recent)} recent — using all {len(articles)}")
+        print(f"      Recency{tag}: only {len(recent)} recent — using all {len(articles)}")
         return dated + undated
 
+
+# ---------------------------------------------------------------------------
+# Author enrichment (AFL.com.au only)
+# ---------------------------------------------------------------------------
 
 def _scrape_afl_author(url: str) -> str:
     """Try to extract a byline from an AFL.com.au article page."""
@@ -282,7 +287,7 @@ def _scrape_afl_author(url: str) -> str:
 def enrich_authors(articles: list[dict]) -> list[dict]:
     """
     For AFL.com.au articles without an author, concurrently scrape the article
-    page to find the byline. Limits to 10 articles with a 12-second total timeout.
+    page to find the byline.
     """
     targets = [
         a for a in articles
@@ -311,6 +316,10 @@ def enrich_authors(articles: list[dict]) -> list[dict]:
     return articles
 
 
+# ---------------------------------------------------------------------------
+# News card rendering
+# ---------------------------------------------------------------------------
+
 def render_news_card(summary: str, article: dict) -> str:
     """Render a single news item as a card with link, byline, and optional thumbnail."""
     url    = article["link"]
@@ -326,7 +335,10 @@ def render_news_card(summary: str, article: dict) -> str:
         f'<a href="{url}" style="font-size:14px;font-weight:bold;color:#003087;'
         f'text-decoration:none;line-height:1.45;display:block;">{summary}</a>'
     )
-    meta = f'<p style="margin:5px 0 0 0;font-size:13px;color:#888888;line-height:1.4;">{byline}</p>'
+    meta = (
+        f'<p style="margin:5px 0 0 0;font-size:13px;color:#888888;line-height:1.4;">'
+        f'{byline}</p>'
+    )
 
     if thumb:
         return (
@@ -348,16 +360,16 @@ def render_news_card(summary: str, article: dict) -> str:
         )
 
 
-def summarise_news(articles: list[dict], client: anthropic.Anthropic) -> str:
-    """
-    Ask Claude to pick and summarise the 7 best stories using a simple
-    INDEX|SUMMARY pipe format — reliable, no JSON or HTML for Claude to mangle.
-    We look up source / author / link / thumbnail from our own data by index.
-    """
-    if not articles:
-        return "<p>No relevant news found in this period.</p>"
+# ---------------------------------------------------------------------------
+# Section 1a — AFL.com.au top stories
+# ---------------------------------------------------------------------------
 
-    pool = articles[:20]
+def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) -> str:
+    """Summarise AFL.com.au articles — official club/league news, 4–5 items."""
+    if not articles:
+        return "<p>No AFL.com.au news found this period.</p>"
+
+    pool = articles[:15]
     numbered = "\n".join(
         f"[{i}] {a['title']} — {a['snippet'][:180]}"
         for i, a in enumerate(pool)
@@ -365,34 +377,79 @@ def summarise_news(articles: list[dict], client: anthropic.Anthropic) -> str:
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=800,
+        max_tokens=600,
         system=(
-            "You are a senior AFL editor. From the numbered articles below, pick the 7 most "
-            "newsworthy (trades, injuries, signings, contracts, suspensions — NOT match results "
-            "or club PR).\n\n"
-            "Return EXACTLY 7 lines. Each line must follow this format:\n"
-            "INDEX|One sentence summary of the story.\n\n"
-            "Example output:\n"
-            "2|Geelong have re-signed key defender Sam Taylor after injury concerns.\n"
-            "5|Carlton confirm a four-person panel to select Michael Voss's replacement.\n\n"
-            "Rules:\n"
-            "- No other text, no headings, no blank lines, no markdown, no HTML.\n"
-            "- INDEX is the number in square brackets from the input.\n"
-            "- Summary is plain text only, one sentence."
+            "You are a senior AFL editor reviewing stories from AFL.com.au. "
+            "Pick the 4–5 most newsworthy items — focus on injuries, team announcements, "
+            "signings, suspensions, rule changes, and official league news. "
+            "Skip pure match previews, club PR fluff, and generic round wrap-ups.\n\n"
+            "Return EXACTLY 4–5 lines in this format:\n"
+            "INDEX|One sentence summary.\n\n"
+            "Rules: no other text, no headings, no blank lines, no markdown, no HTML. "
+            "INDEX is the bracket number from the input. Summary is plain text only."
         ),
         messages=[{"role": "user", "content": numbered}],
     )
 
     raw = response.content[0].text.strip()
-    print(f"  Claude news raw response:\n{raw}\n")
+    print(f"  Claude AFL.com.au raw:\n{raw}\n")
+    return _parse_index_pipe_response(raw, pool)
 
+
+# ---------------------------------------------------------------------------
+# Section 1b — Other media top stories
+# ---------------------------------------------------------------------------
+
+def summarise_media_news(articles: list[dict], client: anthropic.Anthropic) -> str:
+    """
+    Summarise stories from the wider media pool — strong bias toward exclusives,
+    breaking news, and opinion. Deprioritise rewrites of existing stories.
+    """
+    if not articles:
+        return "<p>No media news found this period.</p>"
+
+    pool = articles[:30]
+    numbered = "\n".join(
+        f"[{i}] ({a['source']}) {a['title']} — {a['snippet'][:180]}"
+        for i, a in enumerate(pool)
+    )
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=800,
+        system=(
+            "You are a senior AFL editor curating the best journalism from across Australian media. "
+            "Pick the 6–7 most valuable stories from the list below.\n\n"
+            "STRONG preference for:\n"
+            "- EXCLUSIVES and BREAKING news (scoops, first reports, inside sources)\n"
+            "- OPINION and ANALYSIS pieces with a strong take or original argument\n"
+            "- INVESTIGATIONS, controversies, and governance stories\n"
+            "- Injury updates, trade whispers, and contract news\n\n"
+            "DEPRIORITISE:\n"
+            "- Rewrites or aggregations of stories already broken by other outlets\n"
+            "- Generic match previews and round summaries\n"
+            "- Club PR and promotional content\n\n"
+            "Return EXACTLY 6–7 lines in this format:\n"
+            "INDEX|One sentence summary.\n\n"
+            "Rules: no other text, no headings, no blank lines, no markdown, no HTML. "
+            "INDEX is the bracket number from the input. Summary is plain text only."
+        ),
+        messages=[{"role": "user", "content": numbered}],
+    )
+
+    raw = response.content[0].text.strip()
+    print(f"  Claude media news raw:\n{raw}\n")
+    return _parse_index_pipe_response(raw, pool)
+
+
+def _parse_index_pipe_response(raw: str, pool: list[dict]) -> str:
+    """Parse Claude's INDEX|SUMMARY lines into rendered news cards."""
     cards: list[str] = []
     for line in raw.splitlines():
         line = line.strip()
         if "|" not in line:
             continue
         idx_str, _, summary = line.partition("|")
-        # Strip any stray brackets, spaces, bullets
         idx_str = re.sub(r"[^\d]", "", idx_str)
         summary = summary.strip()
         if not idx_str or not summary:
@@ -402,14 +459,14 @@ def summarise_news(articles: list[dict], client: anthropic.Anthropic) -> str:
             cards.append(render_news_card(summary, pool[idx]))
 
     if not cards:
-        print("  Warning: no cards parsed — falling back to plain list")
+        print("  Warning: no cards parsed — falling back")
         return "<p>News summarisation unavailable this period.</p>"
 
     return "\n".join(cards)
 
 
 # ---------------------------------------------------------------------------
-# Section 2 — Forum buzz
+# Section 3 — Fan Forums (Reddit)
 # ---------------------------------------------------------------------------
 
 def fetch_reddit_threads() -> list[dict]:
@@ -468,7 +525,7 @@ def render_forum_section(reddit: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Section 3 — Journalist tweets
+# Section 2 — Journo Top Tweets
 # ---------------------------------------------------------------------------
 
 def _run_agentic_search(client: anthropic.Anthropic, system: str, user_prompt: str) -> str:
@@ -574,29 +631,43 @@ def _render_tweet_cards(raw: str) -> str | None:
 # Email assembly
 # ---------------------------------------------------------------------------
 
+def _section_row(heading: str, content: str, first: bool = False) -> str:
+    """Render a named section row for the email body table."""
+    top_padding = "22px" if first else "20px"
+    border      = "" if first else "border-top:1px solid #eeeeee;"
+    return f"""
+              <tr>
+                <td style="padding:{top_padding} 0 8px 0;{border}">
+                  <h2 style="margin:0 0 14px 0;font-size:16px;font-weight:bold;
+                             color:#003087;text-transform:uppercase;letter-spacing:0.05em;">
+                    {heading}
+                  </h2>
+                  {content}
+                </td>
+              </tr>"""
+
+
 def build_email_html(
-    news_html: str,
-    forum_html: str,
+    afl_html:    str,
+    media_html:  str,
     tweets_html: str | None,
-    time_slot: str,
-    now_aest: datetime,
+    forum_html:  str,
+    time_slot:   str,
+    now_aest:    datetime,
 ) -> str:
     day_date  = now_aest.strftime("%A %-d %B %Y")
     generated = now_aest.strftime("%-I:%M %p AEST")
 
     tweets_section = ""
     if tweets_html:
-        tweets_section = f"""
-          <!-- Section 3: Journalist Tweets -->
-          <tr>
-            <td style="padding:20px 0 8px 0;border-top:1px solid #eeeeee;">
-              <h2 style="margin:0 0 14px 0;font-size:16px;font-weight:bold;
-                         color:#003087;text-transform:uppercase;letter-spacing:0.05em;">
-                Journalist Tweets
-              </h2>
-              {tweets_html}
-            </td>
-          </tr>"""
+        tweets_section = _section_row("Journo Top Tweets", tweets_html)
+
+    body_sections = (
+        _section_row("Top Stories — AFL.com.au", afl_html,   first=True)
+        + _section_row("Top Stories — Other Media", media_html)
+        + tweets_section
+        + _section_row("Fan Forums", forum_html)
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -632,31 +703,7 @@ def build_email_html(
           <tr>
             <td style="padding:0 28px;">
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-
-                <!-- Section 1: Top Stories -->
-                <tr>
-                  <td style="padding:22px 0 8px 0;">
-                    <h2 style="margin:0 0 16px 0;font-size:16px;font-weight:bold;
-                               color:#003087;text-transform:uppercase;letter-spacing:0.05em;">
-                      Top Stories
-                    </h2>
-                    {news_html}
-                  </td>
-                </tr>
-
-                <!-- Section 2: Fan Forums -->
-                <tr>
-                  <td style="padding:20px 0 8px 0;border-top:1px solid #eeeeee;">
-                    <h2 style="margin:0 0 14px 0;font-size:16px;font-weight:bold;
-                               color:#003087;text-transform:uppercase;letter-spacing:0.05em;">
-                      Fan Forums
-                    </h2>
-                    {forum_html}
-                  </td>
-                </tr>
-
-                {tweets_section}
-
+                {body_sections}
               </table>
             </td>
           </tr>
@@ -704,7 +751,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v6"
+SCRIPT_VERSION = "v7"
 
 
 def main() -> None:
@@ -715,37 +762,47 @@ def main() -> None:
     day_date = now_aest.strftime("%A %-d %B")
     print(f"\n=== AFL Digest {SCRIPT_VERSION} — {time_slot} — {day_date} ===\n")
 
-    # ── Section 1 ──
-    print("[1/4] Fetching & filtering RSS feeds...")
-    raw      = fetch_rss_articles()
-    filtered = filter_articles(raw)
-    recent   = filter_by_recency(filtered)
-    recent   = enrich_authors(recent)
-    print(f"      {len(raw)} fetched → {len(filtered)} filtered → {len(recent)} recent")
+    # ── Section 1a: AFL.com.au ──
+    print("[1/5] Fetching AFL.com.au feed...")
+    afl_raw      = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
+    afl_filtered = filter_articles(afl_raw)
+    afl_recent   = filter_by_recency(afl_filtered, "AFL.com.au")
+    afl_recent   = enrich_authors(afl_recent)
+    print(f"      {len(afl_raw)} fetched → {len(afl_filtered)} filtered → {len(afl_recent)} recent")
 
-    print("[2/4] Summarising news with Claude...")
-    news_html = summarise_news(recent, client)
+    print("[2/5] Summarising AFL.com.au stories with Claude...")
+    afl_html = summarise_afl_official(afl_recent, client)
 
-    # ── Section 2 ──
-    print("[3/4] Fetching Reddit threads...")
+    # ── Section 1b: Other Media ──
+    print("[3/5] Fetching other media feeds...")
+    media_raw      = fetch_rss_articles(OTHER_MEDIA_FEEDS)
+    media_filtered = filter_articles(media_raw)
+    media_recent   = filter_by_recency(media_filtered, "media")
+    print(f"      {len(media_raw)} fetched → {len(media_filtered)} filtered → {len(media_recent)} recent")
+
+    print("[3b]  Summarising media stories with Claude (bias: exclusives/breaking/opinion)...")
+    media_html = summarise_media_news(media_recent, client)
+
+    # ── Section 2: Journo Top Tweets ──
+    print("[4/5] Fetching journalist tweets via Claude web search...")
+    tweets_html = fetch_journalist_tweets(client)
+    if tweets_html:
+        print("      Journalist tweets found — including section")
+    else:
+        print("      No journalist tweets found — omitting section")
+
+    # ── Section 3: Fan Forums ──
+    print("[5/5] Fetching Reddit threads...")
     reddit     = fetch_reddit_threads()
     print(f"      {len(reddit)} threads")
     forum_html = render_forum_section(reddit)
-
-    # ── Section 3 ──
-    print("[4/4] Fetching journalist tweets via Claude web search...")
-    tweets_html = fetch_journalist_tweets(client)
-    if tweets_html:
-        print("      Journalist tweets found — including section 3")
-    else:
-        print("      No journalist tweets found — omitting section 3")
 
     # ── Email ──
     date_str = now_aest.strftime("%-d %B")
     day_str  = now_aest.strftime("%A")
     subject  = f"AFL News Digest — {time_slot} — {day_str} {date_str}"
 
-    html = build_email_html(news_html, forum_html, tweets_html, time_slot, now_aest)
+    html = build_email_html(afl_html, media_html, tweets_html, forum_html, time_slot, now_aest)
     print(f"\nSending: {subject}")
     send_email(html, subject)
     print("\nDone.\n")

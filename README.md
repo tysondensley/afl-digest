@@ -131,13 +131,24 @@ python digest.py
 
 If a feed stops working, update the `RSS_FEEDS` list at the top of `digest.py`:
 
+**AFL.com.au** (own section)
+
 | Source | URL |
 |---|---|
 | AFL.com.au | `https://www.afl.com.au/rss` |
-| The Age AFL | `https://www.theage.com.au/rss/sport/afl.xml` |
-| The Guardian AFL | `https://www.theguardian.com/sport/afl/rss` |
+
+**Other Media** (pooled section — exclusives/breaking/opinion prioritised)
+
+| Source | URL |
+|---|---|
+| The Age | `https://www.theage.com.au/rss/sport/afl.xml` |
+| The Guardian | `https://www.theguardian.com/sport/afl/rss` |
 | Herald Sun (via Google News) | `https://news.google.com/rss/search?q=AFL+site:heraldsun.com.au&hl=en-AU&gl=AU&ceid=AU:en` |
 | Fox Footy (via Google News) | `https://news.google.com/rss/search?q=AFL+site:foxsports.com.au&hl=en-AU&gl=AU&ceid=AU:en` |
+| ABC News (via Google News) | `https://news.google.com/rss/search?q=AFL+site:abc.net.au&hl=en-AU&gl=AU&ceid=AU:en` |
+| SEN (via Google News) | `https://news.google.com/rss/search?q=AFL+site:sen.com.au&hl=en-AU&gl=AU&ceid=AU:en` |
+| The Australian (via Google News) | `https://news.google.com/rss/search?q=AFL+site:theaustralian.com.au&hl=en-AU&gl=AU&ceid=AU:en` |
+| AFR (via Google News) | `https://news.google.com/rss/search?q=AFL+site:afr.com&hl=en-AU&gl=AU&ceid=AU:en` |
 
 ---
 
