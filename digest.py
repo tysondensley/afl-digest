@@ -669,7 +669,8 @@ def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 6) -> str 
         "If you find relevant tweets, return them as lines in this EXACT format "
         "(use <<< as the delimiter — never a pipe character):\n"
         "FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n\n"
-        "Return 3–5 lines maximum. If you find nothing newsworthy, return only: NOTHING\n"
+        "Return 4–6 lines maximum (even numbers fill the 2-column layout best). "
+        "If you find nothing newsworthy, return only: NOTHING\n"
         "No other text. No markdown. No explanation."
     )
     user_prompt = (
@@ -693,8 +694,11 @@ def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 6) -> str 
 
 
 def _render_tweet_cards(raw: str) -> str | None:
-    """Parse <<< -delimited tweet lines and render as HTML cards."""
-    cards = []
+    """
+    Parse <<< -delimited tweet lines and render as a 2-column card grid.
+    Each card has a left blue accent border styled like a tweet embed.
+    """
+    card_html_list = []
     for line in raw.strip().splitlines():
         line = line.strip()
         if "<<<" not in line:
@@ -710,18 +714,45 @@ def _render_tweet_cards(raw: str) -> str | None:
         if not name or not tweet_text:
             continue
 
-        cards.append(
-            f'<div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
-            f'<p style="margin:0 0 5px 0;font-size:12px;font-weight:bold;color:#1d9bf0;">'
-            f'{name} <span style="font-weight:normal;color:#999999;">{handle}</span></p>'
-            f'<p style="margin:0 0 7px 0;font-size:14px;color:#333333;line-height:1.55;">'
+        card_html_list.append(
+            f'<div style="background:#f7f9fc;border-left:3px solid #1d9bf0;'
+            f'border-radius:0 6px 6px 0;padding:12px 14px;height:100%;box-sizing:border-box;">'
+            f'<p style="margin:0 0 6px 0;font-size:12px;line-height:1.3;">'
+            f'<span style="font-weight:bold;color:#1d9bf0;">{name}</span>'
+            f'&nbsp;<span style="color:#999999;font-weight:normal;">{handle}</span></p>'
+            f'<p style="margin:0 0 10px 0;font-size:13px;color:#222222;line-height:1.5;">'
             f'{tweet_text}</p>'
-            f'<a href="{tweet_url}" style="font-size:11px;color:#999999;text-decoration:none;">'
+            f'<a href="{tweet_url}" style="font-size:11px;color:#1d9bf0;text-decoration:none;">'
             f'View on X &rarr;</a>'
             f'</div>'
         )
 
-    return "\n".join(cards) if cards else None
+    if not card_html_list:
+        return None
+
+    # Lay cards out in a 2-column table, filling left-to-right
+    rows = []
+    for i in range(0, len(card_html_list), 2):
+        left  = card_html_list[i]
+        right = card_html_list[i + 1] if i + 1 < len(card_html_list) else ""
+        right_td = (
+            f'<td width="49%" valign="top">{right}</td>'
+            if right else
+            '<td width="49%"></td>'
+        )
+        rows.append(
+            f'<tr>'
+            f'<td width="49%" valign="top" style="padding-right:8px;padding-bottom:10px;">{left}</td>'
+            f'<td width="2%"></td>'
+            f'{right_td}'
+            f'</tr>'
+        )
+
+    return (
+        f'<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">'
+        + "".join(rows)
+        + f'</table>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +878,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v10"
+SCRIPT_VERSION = "v11"
 
 
 def main() -> None:
