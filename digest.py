@@ -288,18 +288,41 @@ def _scrape_afl_author(url: str) -> str:
 
 
 def _scrape_og_image(url: str) -> str:
-    """Fetch the Open Graph / Twitter Card image from an article page."""
+    """
+    Fetch the Open Graph / Twitter Card image from an article page.
+    For Google News redirect URLs, tries to resolve the real article URL
+    from the page's meta-refresh or canonical tag before scraping.
+    """
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=5, allow_redirects=True)
+        resp = requests.get(url, headers=HEADERS, timeout=6, allow_redirects=True)
+        final_url = resp.url  # after any HTTP redirects
+
+        # If still on Google News after redirect, try to extract real article URL
+        if "news.google.com" in final_url:
+            soup_redir = BeautifulSoup(resp.text, "lxml")
+            # Meta-refresh redirect (e.g. <meta http-equiv="refresh" content="0;url=...">)
+            meta_ref = soup_redir.find("meta", attrs={"http-equiv": re.compile("refresh", re.I)})
+            if meta_ref:
+                match = re.search(r"url=(.+)", meta_ref.get("content", ""), re.I)
+                if match:
+                    real_url = match.group(1).strip().strip("'\"")
+                    resp = requests.get(real_url, headers=HEADERS, timeout=5, allow_redirects=True)
+
         soup = BeautifulSoup(resp.text, "lxml")
         for attr in (
             {"property": "og:image"},
+            {"property": "og:image:secure_url"},
             {"name": "twitter:image"},
             {"name": "twitter:image:src"},
+            {"itemprop": "image"},
         ):
             tag = soup.find("meta", attrs=attr)
             if tag and tag.get("content", "").startswith("http"):
                 return tag["content"]
+        # Fallback: <link rel="image_src">
+        link_tag = soup.find("link", rel="image_src")
+        if link_tag and link_tag.get("href", "").startswith("http"):
+            return link_tag["href"]
     except Exception:
         pass
     return ""
@@ -308,14 +331,13 @@ def _scrape_og_image(url: str) -> str:
 def enrich_thumbnails(articles: list[dict]) -> list[dict]:
     """
     For media articles without a thumbnail, concurrently scrape the article
-    page for an Open Graph image. Skips Google News redirect URLs since those
-    resolve to paywalled landing pages rather than article pages.
+    page for an Open Graph image. Attempts all URLs including Google News
+    redirects (which are followed via HTTP redirect or meta-refresh parsing).
     """
     targets = [
         a for a in articles
         if not a.get("thumbnail")
         and a.get("link")
-        and "news.google.com" not in a["link"]
     ]
     if not targets:
         return articles
@@ -658,7 +680,7 @@ X_JOURNALIST_LIST = "https://x.com/i/lists/749517718789906432"
 _FALLBACK_HANDLES = " OR ".join(h for _, h in JOURNALISTS)
 
 
-def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 6) -> str | None:
+def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 9) -> str | None:
     """
     Use Claude web search to find recent high-engagement AFL tweets from journalists
     on the curated X list. Returns a 2-column HTML card grid, or None if nothing found.
@@ -666,31 +688,32 @@ def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 6) -> str 
     fallback_handles = _FALLBACK_HANDLES
 
     system = (
-        "You are an AFL media analyst. Your job is to find the most noteworthy recent tweets "
-        f"from AFL journalists on this X (Twitter) list: {X_JOURNALIST_LIST}\n\n"
-        "Steps:\n"
-        f"1. Visit or search the list URL to identify its members.\n"
-        "2. Search for their recent AFL-related tweets from the last "
-        f"{hours} hours that are generating engagement — high reply counts, "
-        "quote tweets, or content that's clearly spreading through AFL media circles.\n"
-        "3. Only include: breaking news, exclusives, injury updates, trade whispers, "
-        "controversies, or strong opinions getting traction. "
-        "Skip retweets, replies, and generic commentary.\n\n"
+        "You are an AFL media analyst finding the most engaging recent tweets from "
+        f"accounts on this X list: {X_JOURNALIST_LIST}\n\n"
+        f"Find tweets posted in the last {hours} hours only — nothing older.\n\n"
+        "Include tweets from:\n"
+        "- Individual journalists (HIGHEST priority — Cal Twomey, Mitch Cleary, Jon Ralph, etc.)\n"
+        "- AFL media outlet accounts on the list (Fox Footy, The Age Sport, SEN, etc.) — "
+        "include if the tweet itself is breaking news or getting strong engagement\n\n"
+        "Only include tweets that show clear engagement signals: high reply/quote activity, "
+        "breaking a story ahead of mainstream coverage, or a take generating real debate. "
+        "If nothing meets this bar, return NOTHING — do not pad with low-engagement posts.\n\n"
+        "Skip: retweets, replies, match score updates, promotional content.\n\n"
         "Return results as lines in this EXACT format "
         "(use <<< as delimiter — never a pipe):\n"
         "FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n\n"
-        "Return 4–6 lines (even numbers work best for the 2-column layout). "
-        "If nothing newsworthy found, return only: NOTHING\n"
-        "No other text. No markdown. No explanation."
+        "Return 4–6 lines if possible (even numbers fill the 2-column grid best). "
+        "Return NOTHING if nothing qualifies. No other text, markdown, or explanation."
     )
     user_prompt = (
-        f"Find the most engaging AFL journalist tweets from the last {hours} hours. "
-        f"Start by searching this X list: {X_JOURNALIST_LIST}\n"
-        f"You can also search: site:x.com ({fallback_handles}) AFL\n"
-        "Prioritise tweets that are clearly gaining traction — being quoted, "
-        "discussed, or breaking news ahead of mainstream coverage.\n"
-        "Return in format: FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n"
-        "If nothing relevant, reply NOTHING."
+        f"Search X list {X_JOURNALIST_LIST} for high-engagement AFL tweets from the "
+        f"last {hours} hours only.\n"
+        f"Supplementary search: site:x.com ({fallback_handles}) AFL\n"
+        "Rank individual journalist tweets above outlet account tweets. "
+        "Only surface tweets with real traction — being quoted, lots of replies, "
+        "or breaking news before mainstream outlets pick it up.\n"
+        "Format: FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n"
+        "Reply NOTHING if nothing qualifies."
     )
 
     try:
@@ -746,16 +769,11 @@ def _render_tweet_cards(raw: str) -> str | None:
     for i in range(0, len(card_html_list), 2):
         left  = card_html_list[i]
         right = card_html_list[i + 1] if i + 1 < len(card_html_list) else ""
-        right_td = (
-            f'<td width="49%" valign="top">{right}</td>'
-            if right else
-            '<td width="49%"></td>'
-        )
         rows.append(
             f'<tr>'
-            f'<td width="49%" valign="top" style="padding-right:8px;padding-bottom:10px;">{left}</td>'
+            f'<td width="49%" valign="top" style="padding-right:10px;padding-bottom:14px;">{left}</td>'
             f'<td width="2%"></td>'
-            f'{right_td}'
+            f'<td width="49%" valign="top" style="padding-bottom:14px;">{right}</td>'
             f'</tr>'
         )
 
@@ -874,7 +892,7 @@ def send_email(html_body: str, subject: str) -> None:
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"AFL Digest <{gmail_user}>"
+    msg["From"]    = f"AFL News Digest <{gmail_user}>"
     msg["To"]      = RECIPIENT
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
@@ -889,7 +907,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v12"
+SCRIPT_VERSION = "v13"
 
 
 def main() -> None:
@@ -939,7 +957,7 @@ def main() -> None:
     # ── Email ──
     date_str = now_aest.strftime("%-d %B")
     day_str  = now_aest.strftime("%A")
-    subject  = f"AFL News Digest — {time_slot} — {day_str} {date_str}"
+    subject  = f"[{time_slot}] {day_str} {date_str}"
 
     html = build_email_html(afl_html, media_html, tweets_html, forum_html, time_slot, now_aest)
     print(f"\nSending: {subject}")
