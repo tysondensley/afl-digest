@@ -451,7 +451,7 @@ def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) ->
     if not articles:
         return "<p>No AFL.com.au news found this period.</p>"
 
-    pool = articles[:15]
+    pool = articles[:20]
     numbered = "\n".join(
         f"[{i}] {a['title']} — {a['snippet'][:180]}"
         for i, a in enumerate(pool)
@@ -462,10 +462,12 @@ def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) ->
         max_tokens=50,
         system=(
             "You are a senior AFL editor reviewing stories from AFL.com.au. "
-            "Pick the 4–5 most newsworthy items — focus on injuries, team announcements, "
-            "signings, suspensions, rule changes, and official league news. "
-            "Skip pure match previews, club PR fluff, and generic round wrap-ups.\n\n"
-            "Return ONLY the index numbers of the articles you selected, one per line. "
+            "Pick the 4–5 most newsworthy items.\n\n"
+            "PREFER: injuries, team selections, signings, suspensions, "
+            "tribunal decisions, rule changes, official announcements, player milestones.\n\n"
+            "SKIP: pure match score reports, generic highlights packages, "
+            "live blog recaps, round results round-ups, and club sponsor content.\n\n"
+            "Return ONLY the index numbers of the selected articles, one per line. "
             "Nothing else — no summaries, no punctuation, no explanations."
         ),
         messages=[{"role": "user", "content": numbered}],
@@ -907,7 +909,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v13"
+SCRIPT_VERSION = "v14"
 
 
 def main() -> None:
@@ -919,12 +921,14 @@ def main() -> None:
     print(f"\n=== AFL Digest {SCRIPT_VERSION} — {time_slot} — {day_date} ===\n")
 
     # ── Section 1a: AFL.com.au ──
+    # Skip filter_articles here — it's too aggressive for the official site and
+    # drops many valid articles that mention scores/goals in a non-results context.
+    # Claude handles the selection and exclusion instead.
     print("[1/5] Fetching AFL.com.au feed...")
-    afl_raw      = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
-    afl_filtered = filter_articles(afl_raw)
-    afl_recent   = filter_by_recency(afl_filtered, "AFL.com.au")
-    afl_recent   = enrich_authors(afl_recent)
-    print(f"      {len(afl_raw)} fetched → {len(afl_filtered)} filtered → {len(afl_recent)} recent")
+    afl_raw    = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
+    afl_recent = filter_by_recency(afl_raw, "AFL.com.au")
+    afl_recent = enrich_authors(afl_recent)
+    print(f"      {len(afl_raw)} fetched → {len(afl_recent)} recent (no pre-filter)")
 
     print("[2/5] Summarising AFL.com.au stories with Claude...")
     afl_html = summarise_afl_official(afl_recent, client)
