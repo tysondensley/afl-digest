@@ -652,34 +652,45 @@ def _run_agentic_search(client: anthropic.Anthropic, system: str, user_prompt: s
     return ""
 
 
+X_JOURNALIST_LIST = "https://x.com/i/lists/749517718789906432"
+
+# Fallback handles used in search queries if the list can't be accessed directly
+_FALLBACK_HANDLES = " OR ".join(h for _, h in JOURNALISTS)
+
+
 def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 6) -> str | None:
     """
-    Use Claude web search to find recent AFL tweets from known journalists.
-    Returns rendered HTML card string, or None if nothing found.
+    Use Claude web search to find recent high-engagement AFL tweets from journalists
+    on the curated X list. Returns a 2-column HTML card grid, or None if nothing found.
     """
-    names_list = ", ".join(f"{n} ({h})" for n, h in JOURNALISTS)
-    handles    = " OR ".join(h for _, h in JOURNALISTS)
+    fallback_handles = _FALLBACK_HANDLES
 
     system = (
-        "You are an AFL media analyst. Search X (Twitter) for recent tweets from specific "
-        "AFL journalists. Only include tweets that are genuinely newsworthy — breaking news, "
-        "injury updates, trade whispers, controversies, or strong takes getting traction. "
-        "Ignore retweets, replies, and promotional content. "
-        f"Only include tweets posted in the last {hours} hours. "
-        "If you find relevant tweets, return them as lines in this EXACT format "
-        "(use <<< as the delimiter — never a pipe character):\n"
+        "You are an AFL media analyst. Your job is to find the most noteworthy recent tweets "
+        f"from AFL journalists on this X (Twitter) list: {X_JOURNALIST_LIST}\n\n"
+        "Steps:\n"
+        f"1. Visit or search the list URL to identify its members.\n"
+        "2. Search for their recent AFL-related tweets from the last "
+        f"{hours} hours that are generating engagement — high reply counts, "
+        "quote tweets, or content that's clearly spreading through AFL media circles.\n"
+        "3. Only include: breaking news, exclusives, injury updates, trade whispers, "
+        "controversies, or strong opinions getting traction. "
+        "Skip retweets, replies, and generic commentary.\n\n"
+        "Return results as lines in this EXACT format "
+        "(use <<< as delimiter — never a pipe):\n"
         "FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n\n"
-        "Return 4–6 lines maximum (even numbers fill the 2-column layout best). "
-        "If you find nothing newsworthy, return only: NOTHING\n"
+        "Return 4–6 lines (even numbers work best for the 2-column layout). "
+        "If nothing newsworthy found, return only: NOTHING\n"
         "No other text. No markdown. No explanation."
     )
     user_prompt = (
-        f"Search X/Twitter for AFL-related tweets posted in the last {hours} hours from "
-        f"these journalists: {names_list}. "
-        f"You can search: site:x.com ({handles}) AFL\n"
-        "Return only newsworthy tweets (breaking news, injuries, trades, controversies) "
-        "in the format: FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n"
-        "If nothing relevant found, reply NOTHING."
+        f"Find the most engaging AFL journalist tweets from the last {hours} hours. "
+        f"Start by searching this X list: {X_JOURNALIST_LIST}\n"
+        f"You can also search: site:x.com ({fallback_handles}) AFL\n"
+        "Prioritise tweets that are clearly gaining traction — being quoted, "
+        "discussed, or breaking news ahead of mainstream coverage.\n"
+        "Return in format: FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n"
+        "If nothing relevant, reply NOTHING."
     )
 
     try:
@@ -878,7 +889,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v11"
+SCRIPT_VERSION = "v12"
 
 
 def main() -> None:
