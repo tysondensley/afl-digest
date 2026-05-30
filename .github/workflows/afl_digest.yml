@@ -52,11 +52,17 @@ jobs:
           if [ -n "${{ github.event.inputs.time_slot }}" ]; then
             echo "TIME_SLOT=${{ github.event.inputs.time_slot }}" >> "$GITHUB_ENV"
           else
+            # GitHub Actions crons can run 1-3h late on the free tier, so we use
+            # generous UTC ranges rather than exact hour matching.
+            # Morning  target 20:15 UTC → cover 17:00–01:59 UTC
+            # Midday   target 02:00 UTC → cover 02:00–05:59 UTC
+            # Afternoon target 06:30 UTC → cover 06:00–09:59 UTC
+            # Evening  target 11:00 UTC → cover 10:00–16:59 UTC
             HOUR=$(date -u +%H)
-            if   [ "$HOUR" -eq 20 ]; then echo "TIME_SLOT=Morning"   >> "$GITHUB_ENV"
-            elif [ "$HOUR" -eq 2  ]; then echo "TIME_SLOT=Midday"    >> "$GITHUB_ENV"
-            elif [ "$HOUR" -eq 6  ]; then echo "TIME_SLOT=Afternoon" >> "$GITHUB_ENV"
-            else                          echo "TIME_SLOT=Evening"   >> "$GITHUB_ENV"
+            if   [ "$HOUR" -ge 17 ] || [ "$HOUR" -le 1 ]; then echo "TIME_SLOT=Morning"   >> "$GITHUB_ENV"
+            elif [ "$HOUR" -ge 2  ] && [ "$HOUR" -le 5 ]; then echo "TIME_SLOT=Midday"    >> "$GITHUB_ENV"
+            elif [ "$HOUR" -ge 6  ] && [ "$HOUR" -le 9 ]; then echo "TIME_SLOT=Afternoon" >> "$GITHUB_ENV"
+            else                                                echo "TIME_SLOT=Evening"   >> "$GITHUB_ENV"
             fi
           fi
 

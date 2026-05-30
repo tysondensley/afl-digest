@@ -369,7 +369,7 @@ def render_news_card(summary: str, article: dict, bold_title: bool = True) -> st
 # ---------------------------------------------------------------------------
 
 def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) -> str:
-    """Summarise AFL.com.au articles — official club/league news, 4–5 items."""
+    """Select AFL.com.au articles — official club/league news, 4–5 items."""
     if not articles:
         return "<p>No AFL.com.au news found this period.</p>"
 
@@ -381,23 +381,21 @@ def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) ->
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=600,
+        max_tokens=50,
         system=(
             "You are a senior AFL editor reviewing stories from AFL.com.au. "
             "Pick the 4–5 most newsworthy items — focus on injuries, team announcements, "
             "signings, suspensions, rule changes, and official league news. "
             "Skip pure match previews, club PR fluff, and generic round wrap-ups.\n\n"
-            "Return EXACTLY 4–5 lines in this format:\n"
-            "INDEX|One sentence summary.\n\n"
-            "Rules: no other text, no headings, no blank lines, no markdown, no HTML. "
-            "INDEX is the bracket number from the input. Summary is plain text only."
+            "Return ONLY the index numbers of the articles you selected, one per line. "
+            "Nothing else — no summaries, no punctuation, no explanations."
         ),
         messages=[{"role": "user", "content": numbered}],
     )
 
     raw = response.content[0].text.strip()
-    print(f"  Claude AFL.com.au raw:\n{raw}\n")
-    return _parse_index_pipe_response(raw, pool)
+    print(f"  Claude AFL.com.au selected indices:\n{raw}\n")
+    return _parse_index_response(raw, pool)
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +404,8 @@ def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) ->
 
 def summarise_media_news(articles: list[dict], client: anthropic.Anthropic) -> str:
     """
-    Summarise stories from the wider media pool — strong bias toward exclusives,
-    breaking news, and opinion. Deprioritise rewrites of existing stories.
+    Select stories from the wider media pool — strong bias toward exclusives,
+    breaking news, and opinion. Displays actual article headlines verbatim.
     """
     if not articles:
         return "<p>No media news found this period.</p>"
@@ -420,13 +418,14 @@ def summarise_media_news(articles: list[dict], client: anthropic.Anthropic) -> s
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=800,
+        max_tokens=50,
         system=(
             "You are a senior AFL editor curating the best journalism from across Australian media. "
             "Pick the 6–7 most valuable stories from the list below.\n\n"
             "STRONG preference for:\n"
             "- EXCLUSIVES and BREAKING news (scoops, first reports, inside sources)\n"
-            "- OPINION and ANALYSIS pieces with a strong take or original argument\n"
+            "- OPINION and ANALYSIS from prominent journalists (e.g. regular Saturday columns "
+            "  from established AFL writers like Caroline Wilson — these are must-reads)\n"
             "- INVESTIGATIONS, controversies, and governance stories\n"
             "- Injury updates, trade whispers, and contract news\n\n"
             "REJECT any story where:\n"
@@ -436,38 +435,35 @@ def summarise_media_news(articles: list[dict], client: anthropic.Anthropic) -> s
             "- It is a rewrite or aggregation of a story already broken by another outlet\n"
             "- It is a generic match preview, round summary, or club PR\n\n"
             "Only include a story if AFL football is the PRIMARY subject.\n\n"
-            "Return EXACTLY 6–7 lines in this format:\n"
-            "INDEX|One sentence summary.\n\n"
-            "Rules: no other text, no headings, no blank lines, no markdown, no HTML. "
-            "INDEX is the bracket number from the input. Summary is plain text only."
+            "Return ONLY the index numbers of the articles you selected, one per line. "
+            "Nothing else — no summaries, no punctuation, no explanations."
         ),
         messages=[{"role": "user", "content": numbered}],
     )
 
     raw = response.content[0].text.strip()
-    print(f"  Claude media news raw:\n{raw}\n")
-    return _parse_index_pipe_response(raw, pool, bold_title=False)
+    print(f"  Claude media selected indices:\n{raw}\n")
+    return _parse_index_response(raw, pool, bold_title=False)
 
 
-def _parse_index_pipe_response(raw: str, pool: list[dict], bold_title: bool = True) -> str:
-    """Parse Claude's INDEX|SUMMARY lines into rendered news cards."""
+def _parse_index_response(raw: str, pool: list[dict], bold_title: bool = True) -> str:
+    """Parse Claude's index-number-only response and render cards using actual article titles."""
     cards: list[str] = []
+    seen_idx: set[int] = set()
     for line in raw.splitlines():
-        line = line.strip()
-        if "|" not in line:
-            continue
-        idx_str, _, summary = line.partition("|")
-        idx_str = re.sub(r"[^\d]", "", idx_str)
-        summary = summary.strip()
-        if not idx_str or not summary:
+        idx_str = re.sub(r"[^\d]", "", line.strip())
+        if not idx_str:
             continue
         idx = int(idx_str)
-        if 0 <= idx < len(pool):
-            cards.append(render_news_card(summary, pool[idx], bold_title=bold_title))
+        if 0 <= idx < len(pool) and idx not in seen_idx:
+            seen_idx.add(idx)
+            article = pool[idx]
+            # Use the real article headline — never paraphrase
+            cards.append(render_news_card(article["title"], article, bold_title=bold_title))
 
     if not cards:
-        print("  Warning: no cards parsed — falling back")
-        return "<p>News summarisation unavailable this period.</p>"
+        print("  Warning: no indices parsed — falling back")
+        return "<p>News selection unavailable this period.</p>"
 
     return "\n".join(cards)
 
@@ -477,7 +473,11 @@ def _parse_index_pipe_response(raw: str, pool: list[dict], bold_title: bool = Tr
 # ---------------------------------------------------------------------------
 
 def fetch_reddit_threads() -> list[dict]:
-    """Try old.reddit.com first (less likely to block cloud IPs), fall back to www."""
+    """
+    Fetch r/AFL hot threads. Tries JSON API first (full metadata), then falls
+    back to RSS via feedparser (title + URL only) if the IP is blocked.
+    """
+    # ── Attempt 1 & 2: JSON API ──────────────────────────────────────────
     for base in ("https://old.reddit.com", "https://www.reddit.com"):
         url = f"{base}/r/AFL/hot.json?limit=15"
         try:
@@ -498,9 +498,42 @@ def fetch_reddit_threads() -> list[dict]:
                 if len(threads) == 5:
                     break
             if threads:
+                print(f"      Reddit: JSON API succeeded ({base})")
                 return threads
         except Exception as exc:
-            print(f"  Reddit warning ({base}): {exc}")
+            print(f"  Reddit JSON warning ({base}): {exc}")
+
+    # ── Attempt 3: RSS feed (fewer fields, but different code path) ───────
+    for rss_base in ("https://www.reddit.com", "https://old.reddit.com"):
+        rss_url = f"{rss_base}/r/AFL/hot.rss"
+        try:
+            feed = feedparser.parse(rss_url, request_headers=REDDIT_HEADERS)
+            if not feed.entries:
+                continue
+            threads = []
+            for entry in feed.entries[:10]:
+                title = getattr(entry, "title", "").strip()
+                url   = getattr(entry, "link",  "").strip()
+                if not title or not url:
+                    continue
+                # RSS titles are often prefixed with "r/AFL: " — strip it
+                title = re.sub(r"^r/AFL:\s*", "", title)
+                threads.append({
+                    "title":    title,
+                    "comments": None,
+                    "score":    None,
+                    "flair":    "",
+                    "url":      url,
+                })
+                if len(threads) == 5:
+                    break
+            if threads:
+                print(f"      Reddit: RSS fallback succeeded ({rss_base})")
+                return threads
+        except Exception as exc:
+            print(f"  Reddit RSS warning ({rss_base}): {exc}")
+
+    print("  Reddit: all methods failed — section will be empty")
     return []
 
 
@@ -524,8 +557,9 @@ def render_forum_section(reddit: list[dict]) -> str:
             f'text-decoration:none;line-height:1.4;display:block;">'
             f'{t["title"]}</a>{flair_html}'
             f'<p style="margin:5px 0 0 0;font-size:12px;color:#888888;">'
-            f'r/AFL &nbsp;&middot;&nbsp; {t["comments"]:,} comments &nbsp;&middot;&nbsp; '
-            f'{t["score"]:,} upvotes</p>'
+            f'r/AFL'
+            + (f' &nbsp;&middot;&nbsp; {t["comments"]:,} comments &nbsp;&middot;&nbsp; {t["score"]:,} upvotes' if t["comments"] is not None else '')
+            + '</p>'
             f'</div>'
         )
     return "\n".join(items)
@@ -757,7 +791,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v8"
+SCRIPT_VERSION = "v9"
 
 
 def main() -> None:
