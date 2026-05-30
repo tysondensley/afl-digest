@@ -287,6 +287,62 @@ def _scrape_afl_author(url: str) -> str:
     return ""
 
 
+def _scrape_og_image(url: str) -> str:
+    """Fetch the Open Graph / Twitter Card image from an article page."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=5, allow_redirects=True)
+        soup = BeautifulSoup(resp.text, "lxml")
+        for attr in (
+            {"property": "og:image"},
+            {"name": "twitter:image"},
+            {"name": "twitter:image:src"},
+        ):
+            tag = soup.find("meta", attrs=attr)
+            if tag and tag.get("content", "").startswith("http"):
+                return tag["content"]
+    except Exception:
+        pass
+    return ""
+
+
+def enrich_thumbnails(articles: list[dict]) -> list[dict]:
+    """
+    For media articles without a thumbnail, concurrently scrape the article
+    page for an Open Graph image. Skips Google News redirect URLs since those
+    resolve to paywalled landing pages rather than article pages.
+    """
+    targets = [
+        a for a in articles
+        if not a.get("thumbnail")
+        and a.get("link")
+        and "news.google.com" not in a["link"]
+    ]
+    if not targets:
+        return articles
+
+    print(f"      Enriching thumbnails for {len(targets)} articles...")
+    url_to_thumb: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_scrape_og_image, a["link"]): a["link"]
+                   for a in targets[:15]}
+        for fut in as_completed(futures, timeout=20):
+            url = futures[fut]
+            try:
+                thumb = fut.result()
+                if thumb:
+                    url_to_thumb[url] = thumb
+            except Exception:
+                pass
+
+    found = 0
+    for a in articles:
+        if a["link"] in url_to_thumb:
+            a["thumbnail"] = url_to_thumb[a["link"]]
+            found += 1
+    print(f"      Found {found} thumbnails")
+    return articles
+
+
 def enrich_authors(articles: list[dict]) -> list[dict]:
     """
     For AFL.com.au articles without an author, concurrently scrape the article
@@ -791,7 +847,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v9"
+SCRIPT_VERSION = "v10"
 
 
 def main() -> None:
@@ -818,6 +874,7 @@ def main() -> None:
     media_raw      = fetch_rss_articles(OTHER_MEDIA_FEEDS)
     media_filtered = filter_articles(media_raw)
     media_recent   = filter_by_recency(media_filtered, "media")
+    media_recent   = enrich_thumbnails(media_recent)
     print(f"      {len(media_raw)} fetched → {len(media_filtered)} filtered → {len(media_recent)} recent")
 
     print("[3b]  Summarising media stories with Claude (bias: exclusives/breaking/opinion)...")
