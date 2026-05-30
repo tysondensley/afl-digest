@@ -192,8 +192,8 @@ def fetch_rss_articles(feeds: list[tuple]) -> list[dict]:
                 if " - " in raw_title:
                     raw_title = raw_title.rsplit(" - ", 1)[0].strip()
 
-                # Strip leading "by " / "By " that some feeds include
-                author = re.sub(r"(?i)^by\s+", "", author.strip()).strip()
+                # Strip leading "by"/"By " that some feeds include (with or without space)
+                author = re.sub(r"(?i)^by\s*", "", author.strip()).strip()
 
                 articles.append({
                     "source":    source,
@@ -897,7 +897,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v15"
+SCRIPT_VERSION = "v16"
 
 
 def main() -> None:
@@ -949,7 +949,7 @@ def main() -> None:
     # ── Email ──
     date_str = now_aest.strftime("%-d %B")
     day_str  = now_aest.strftime("%A")
-    subject  = f"[{time_slot}] {day_str} {date_str}"
+    subject  = f"{time_slot} - {day_str} {date_str}"
 
     html = build_email_html(afl_html, media_html, tweets_html, forum_html, time_slot, now_aest)
     print(f"\nSending: {subject}")
