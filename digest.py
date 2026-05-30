@@ -288,26 +288,9 @@ def _scrape_afl_author(url: str) -> str:
 
 
 def _scrape_og_image(url: str) -> str:
-    """
-    Fetch the Open Graph / Twitter Card image from an article page.
-    For Google News redirect URLs, tries to resolve the real article URL
-    from the page's meta-refresh or canonical tag before scraping.
-    """
+    """Fetch the Open Graph / Twitter Card image from a direct article URL."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=6, allow_redirects=True)
-        final_url = resp.url  # after any HTTP redirects
-
-        # If still on Google News after redirect, try to extract real article URL
-        if "news.google.com" in final_url:
-            soup_redir = BeautifulSoup(resp.text, "lxml")
-            # Meta-refresh redirect (e.g. <meta http-equiv="refresh" content="0;url=...">)
-            meta_ref = soup_redir.find("meta", attrs={"http-equiv": re.compile("refresh", re.I)})
-            if meta_ref:
-                match = re.search(r"url=(.+)", meta_ref.get("content", ""), re.I)
-                if match:
-                    real_url = match.group(1).strip().strip("'\"")
-                    resp = requests.get(real_url, headers=HEADERS, timeout=5, allow_redirects=True)
-
         soup = BeautifulSoup(resp.text, "lxml")
         for attr in (
             {"property": "og:image"},
@@ -331,13 +314,18 @@ def _scrape_og_image(url: str) -> str:
 def enrich_thumbnails(articles: list[dict]) -> list[dict]:
     """
     For media articles without a thumbnail, concurrently scrape the article
-    page for an Open Graph image. Attempts all URLs including Google News
-    redirects (which are followed via HTTP redirect or meta-refresh parsing).
+    page for an Open Graph image.
+
+    Google News redirect URLs (news.google.com/rss/articles/...) use JS
+    redirects so requests always lands on the Google News page itself and
+    scrapes the Google News logo. Those are skipped — no thumbnail is better
+    than a generic Google logo. Only direct article URLs are attempted.
     """
     targets = [
         a for a in articles
         if not a.get("thumbnail")
         and a.get("link")
+        and "news.google.com" not in a["link"]
     ]
     if not targets:
         return articles
@@ -909,7 +897,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v14"
+SCRIPT_VERSION = "v15"
 
 
 def main() -> None:
