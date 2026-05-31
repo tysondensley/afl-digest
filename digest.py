@@ -183,7 +183,7 @@ def fetch_rss_articles(feeds: list[tuple]) -> list[dict]:
                 if not author:
                     tags = getattr(entry, "tags", [])
                     for t in tags:
-                        if t.get("scheme", "").endswith("creator"):
+                        if (t.get("scheme") or "").endswith("creator"):
                             author = t.get("term", "")
                             break
 
@@ -234,10 +234,16 @@ def filter_articles(articles: list[dict]) -> list[dict]:
     return result
 
 
-def filter_by_recency(articles: list[dict], label: str = "", hours: int = 10) -> list[dict]:
+def filter_by_recency(
+    articles: list[dict],
+    label: str = "",
+    hours: int = 10,
+    min_recent: int = 5,
+) -> list[dict]:
     """
     Sort by publish date (newest first) and prefer articles from the last `hours` hours.
-    Falls back to all articles if fewer than 5 recent ones exist.
+    Falls back to all articles only when fewer than `min_recent` recent ones exist.
+    Use min_recent=1 to avoid falling back whenever at least one recent article is found.
     """
     now    = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=hours)
@@ -251,7 +257,7 @@ def filter_by_recency(articles: list[dict], label: str = "", hours: int = 10) ->
     older  = [a for a in dated if a["published"] <  cutoff]
 
     tag = f" [{label}]" if label else ""
-    if len(recent) >= 5:
+    if len(recent) >= min_recent:
         print(f"      Recency{tag}: {len(recent)} from last {hours}h "
               f"(+ {len(older)} older, {len(undated)} undated discarded)")
         return recent + undated[:3]
@@ -434,14 +440,23 @@ def render_news_card(summary: str, article: dict, bold_title: bool = True) -> st
 # Section 1a — AFL.com.au top stories
 # ---------------------------------------------------------------------------
 
-def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) -> str:
+def summarise_afl_official(
+    articles: list[dict],
+    client: anthropic.Anthropic,
+    hours_lookback: int = 9,
+) -> str:
     """Select AFL.com.au articles — official club/league news, 4–5 items."""
     if not articles:
         return "<p>No AFL.com.au news found this period.</p>"
 
+    now  = datetime.now(timezone.utc)
     pool = articles[:20]
     numbered = "\n".join(
         f"[{i}] {a['title']} — {a['snippet'][:180]}"
+        + (
+            f" [{int((now - a['published']).total_seconds() / 3600)}h ago]"
+            if a.get("published") else " [age unknown]"
+        )
         for i, a in enumerate(pool)
     )
 
@@ -450,6 +465,10 @@ def summarise_afl_official(articles: list[dict], client: anthropic.Anthropic) ->
         max_tokens=50,
         system=(
             "You are a senior AFL editor reviewing stories from AFL.com.au. "
+            f"This digest covers the last {hours_lookback} hours. "
+            f"STRONGLY prefer articles published within {hours_lookback} hours "
+            f"(shown as e.g. '2h ago'). Only include older articles if nothing "
+            f"recent is newsworthy.\n\n"
             "Pick the 4–5 most newsworthy items.\n\n"
             "PREFER: injuries, team selections, signings, suspensions, "
             "tribunal decisions, rule changes, official announcements, player milestones.\n\n"
@@ -825,7 +844,12 @@ def fetch_journo_news(client: anthropic.Anthropic, hours_lookback: int) -> list[
     results: list[dict] = []
     seen_keys: set[str] = set()
 
-    for batch in _JOURNO_BATCHES:
+    for batch_idx, batch in enumerate(_JOURNO_BATCHES):
+        # Space batches 15 s apart — web-search responses are token-heavy and
+        # firing them back-to-back hits the 30k input-tokens/min rate limit.
+        if batch_idx > 0:
+            _time.sleep(15)
+
         batch_str = ", ".join(batch)
         user_prompt = (
             f"Find any AFL news, articles, or reported statements from the following journalists "
@@ -837,43 +861,57 @@ def fetch_journo_news(client: anthropic.Anthropic, hours_lookback: int) -> list[
             "Return NOTHING if nothing qualifies."
         )
 
+        def _run_batch() -> str:
+            return _run_agentic_search(client, system, user_prompt)
+
         try:
-            raw = _run_agentic_search(client, system, user_prompt)
-            label = batch_str[:50]
-            print(f"  Journo Watch [{label}...] raw:\n{raw[:250]}\n")
-            if not raw or raw.strip().upper() == "NOTHING":
+            raw = _run_batch()
+        except Exception as exc:
+            if "429" in str(exc) or "rate_limit" in str(exc):
+                print(f"  Journo Watch rate-limited on batch {batch_idx+1} — waiting 30s...")
+                _time.sleep(30)
+                try:
+                    raw = _run_batch()
+                except Exception as exc2:
+                    print(f"  Journo Watch batch {batch_idx+1} failed after retry: {exc2}")
+                    continue
+            else:
+                print(f"  Journo Watch batch warning ({batch_str[:40]}): {exc}")
                 continue
 
-            for line in raw.strip().splitlines():
-                line = line.strip()
-                if "<<<" not in line:
-                    continue
-                parts = [p.strip() for p in line.split("<<<")]
-                if len(parts) < 3:
-                    continue
-                journalist = parts[0]
-                outlet     = parts[1] if len(parts) > 1 else ""
-                summary    = parts[2] if len(parts) > 2 else ""
-                url        = parts[3] if len(parts) > 3 else ""
+        label = batch_str[:50]
+        print(f"  Journo Watch [{label}...] raw:\n{raw[:250]}\n")
+        if not raw or raw.strip().upper() == "NOTHING":
+            continue
 
-                if not journalist or not summary:
-                    continue
+        for line in raw.strip().splitlines():
+            line = line.strip()
+            if "<<<" not in line:
+                continue
+            parts = [p.strip() for p in line.split("<<<")]
+            if len(parts) < 3:
+                continue
+            journalist = parts[0]
+            outlet     = parts[1] if len(parts) > 1 else ""
+            summary    = parts[2] if len(parts) > 2 else ""
+            url        = parts[3] if len(parts) > 3 else ""
 
-                # Deduplicate: prefer URL as key, fall back to summary prefix
-                dedup_key = (url or summary.lower()[:80])
-                if dedup_key in seen_keys:
-                    continue
-                seen_keys.add(dedup_key)
-                seen_keys.add(summary.lower()[:80])   # also block near-duplicate summaries
+            if not journalist or not summary:
+                continue
 
-                results.append({
-                    "journalist": journalist,
-                    "outlet":     outlet,
-                    "summary":    summary,
-                    "url":        url,
-                })
-        except Exception as exc:
-            print(f"  Journo Watch batch warning ({batch_str[:40]}): {exc}")
+            # Deduplicate: prefer URL as key, fall back to summary prefix
+            dedup_key = (url or summary.lower()[:80])
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+            seen_keys.add(summary.lower()[:80])   # also block near-duplicate summaries
+
+            results.append({
+                "journalist": journalist,
+                "outlet":     outlet,
+                "summary":    summary,
+                "url":        url,
+            })
 
     print(f"  Journo Watch: {len(results)} item(s) found")
     return results
@@ -1046,7 +1084,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v18"
+SCRIPT_VERSION = "v19"
 
 
 def main() -> None:
@@ -1066,12 +1104,13 @@ def main() -> None:
     # Claude handles the selection and exclusion instead.
     print("[1/6] Fetching AFL.com.au feed...")
     afl_raw    = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
-    afl_recent = filter_by_recency(afl_raw, "AFL.com.au", hours=hours_lookback)
+    # min_recent=1: never fall back to the full pool if any recent article exists
+    afl_recent = filter_by_recency(afl_raw, "AFL.com.au", hours=hours_lookback, min_recent=1)
     afl_recent = enrich_authors(afl_recent)
-    print(f"      {len(afl_raw)} fetched → {len(afl_recent)} recent (no pre-filter)")
+    print(f"      {len(afl_raw)} fetched → {len(afl_recent)} after recency filter")
 
     print("[2/6] Summarising AFL.com.au stories with Claude...")
-    afl_html = summarise_afl_official(afl_recent, client)
+    afl_html = summarise_afl_official(afl_recent, client, hours_lookback=hours_lookback)
 
     # ── Section 1b: Other Media ──
     print("[3/6] Fetching other media feeds...")
@@ -1094,6 +1133,8 @@ def main() -> None:
         print("      Journo Watch: nothing found — omitting section")
 
     # ── Section 2b: Journo Top Tweets ──
+    # Wait before tweet fetch so the token-per-minute bucket refills after Journo Watch
+    _time.sleep(20)
     # Use at least 9h for tweets — shorter windows risk returning nothing on quiet periods
     tweet_hours = max(hours_lookback, 9)
     print(f"[5/6] Fetching journalist tweets via Claude web search ({tweet_hours}h lookback)...")
