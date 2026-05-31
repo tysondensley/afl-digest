@@ -669,6 +669,27 @@ X_JOURNALIST_LIST = "https://x.com/i/lists/749517718789906432"
 # Fallback handles used in search queries if the list can't be accessed directly
 _FALLBACK_HANDLES = " OR ".join(h for _, h in JOURNALISTS)
 
+# ── Journo Watch ─────────────────────────────────────────────────────────────
+
+# 18 key AFL journalists whose published articles/reports are surfaced each edition
+JOURNO_WATCH_JOURNALISTS = [
+    "Tom Morris",      "Mitch Cleary",    "Xander McGuire",  "Jay Clark",
+    "Sam McClure",     "Callum Twomey",   "Riley Beveridge", "Josh Gabelich",
+    "Michael Whiting", "Nathan Schmook",  "Emily Patterson", "Owen Leonard",
+    "Ryan Daniels",    "Theo Doropoulos", "Jon Ralph",       "Sam Edmund",
+    "Peter Ryan",      "Michael Gleeson",
+]
+
+# Batches of 4–5 — keeps each web-search prompt focused
+_JOURNO_BATCHES = [
+    JOURNO_WATCH_JOURNALISTS[i : i + 5]
+    for i in range(0, len(JOURNO_WATCH_JOURNALISTS), 5)
+]
+
+# How many hours back each time-slot edition should look
+# Morning 9h: the 9pm Evening edition covers the prior evening, so 9h is right
+SLOT_LOOKBACK_HOURS = {"Morning": 9, "Midday": 6, "Afternoon": 5, "Evening": 5}
+
 
 def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 9) -> str | None:
     """
@@ -775,6 +796,128 @@ def _render_tweet_cards(raw: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Section 2b — Journo Watch (articles / reported statements)
+# ---------------------------------------------------------------------------
+
+def fetch_journo_news(client: anthropic.Anthropic, hours_lookback: int) -> list[dict]:
+    """
+    Search for AFL articles or reported statements from JOURNO_WATCH_JOURNALISTS
+    published in the last `hours_lookback` hours, using Claude web search in batches.
+
+    Returns a deduplicated list of dicts:
+        {"journalist": str, "outlet": str, "summary": str, "url": str}
+    Returns an empty list if nothing is found (section is omitted).
+    """
+    system = (
+        "You are an AFL media researcher. For each journalist listed, search for any "
+        "AFL news, articles, or reported statements they have published in the given window.\n\n"
+        "Include: byline articles, breaking-news scoops, exclusive reports, "
+        "and any news coverage that prominently quotes their reporting.\n"
+        "Exclude: match scores, match results, round summaries, and promotional content.\n\n"
+        "Return ONLY items you actually find — do NOT invent or hallucinate entries.\n"
+        "For each item output one line in this exact format (use <<< as delimiter):\n"
+        "JOURNALIST_NAME<<<OUTLET<<<ONE_SENTENCE_SUMMARY<<<URL\n\n"
+        "Skip any journalist for whom nothing is found. "
+        "Return the single word NOTHING if there are no results at all. "
+        "No other text, markdown, or explanation."
+    )
+
+    results: list[dict] = []
+    seen_keys: set[str] = set()
+
+    for batch in _JOURNO_BATCHES:
+        batch_str = ", ".join(batch)
+        user_prompt = (
+            f"Find any AFL news, articles, or reported statements from the following journalists "
+            f"in the last {hours_lookback} hours: {batch_str}.\n\n"
+            "Include breaking news, byline articles, and news coverage quoting their reporting.\n"
+            "Exclude match scores, results, and promotional content.\n\n"
+            "Return one line per item:\n"
+            "JOURNALIST_NAME<<<OUTLET<<<ONE_SENTENCE_SUMMARY<<<URL\n\n"
+            "Return NOTHING if nothing qualifies."
+        )
+
+        try:
+            raw = _run_agentic_search(client, system, user_prompt)
+            label = batch_str[:50]
+            print(f"  Journo Watch [{label}...] raw:\n{raw[:250]}\n")
+            if not raw or raw.strip().upper() == "NOTHING":
+                continue
+
+            for line in raw.strip().splitlines():
+                line = line.strip()
+                if "<<<" not in line:
+                    continue
+                parts = [p.strip() for p in line.split("<<<")]
+                if len(parts) < 3:
+                    continue
+                journalist = parts[0]
+                outlet     = parts[1] if len(parts) > 1 else ""
+                summary    = parts[2] if len(parts) > 2 else ""
+                url        = parts[3] if len(parts) > 3 else ""
+
+                if not journalist or not summary:
+                    continue
+
+                # Deduplicate: prefer URL as key, fall back to summary prefix
+                dedup_key = (url or summary.lower()[:80])
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+                seen_keys.add(summary.lower()[:80])   # also block near-duplicate summaries
+
+                results.append({
+                    "journalist": journalist,
+                    "outlet":     outlet,
+                    "summary":    summary,
+                    "url":        url,
+                })
+        except Exception as exc:
+            print(f"  Journo Watch batch warning ({batch_str[:40]}): {exc}")
+
+    print(f"  Journo Watch: {len(results)} item(s) found")
+    return results
+
+
+def render_journo_watch(items: list[dict]) -> str | None:
+    """
+    Render Journo Watch items as styled rows.
+    Format: Journalist (Outlet) — one-sentence summary + clickable link
+    Returns None if the list is empty (section is omitted from email).
+    """
+    if not items:
+        return None
+
+    rows = []
+    for item in items:
+        journalist = item.get("journalist", "")
+        outlet     = item.get("outlet", "")
+        summary    = item.get("summary", "")
+        url        = item.get("url", "")
+
+        byline = f'<strong>{journalist}</strong>'
+        if outlet:
+            byline += f' <span style="color:#888888;font-weight:normal;">({outlet})</span>'
+
+        if url and url not in ("#", ""):
+            content_html = (
+                f'<a href="{url}" style="color:#003087;text-decoration:none;">'
+                f'{summary}</a>'
+            )
+        else:
+            content_html = summary
+
+        rows.append(
+            f'<div style="margin-bottom:12px;padding-bottom:12px;'
+            f'border-bottom:1px solid #eeeeee;font-size:14px;line-height:1.5;color:#333333;">'
+            f'{byline} &mdash; {content_html}'
+            f'</div>'
+        )
+
+    return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
 # Email assembly
 # ---------------------------------------------------------------------------
 
@@ -798,6 +941,7 @@ def build_email_html(
     afl_html:    str,
     media_html:  str,
     tweets_html: str | None,
+    journo_html: str | None,
     forum_html:  str,
     time_slot:   str,
     now_aest:    datetime,
@@ -805,13 +949,18 @@ def build_email_html(
     day_date  = now_aest.strftime("%A %-d %B %Y")
     generated = now_aest.strftime("%-I:%M %p AEST")
 
+    journo_section = ""
+    if journo_html:
+        journo_section = _section_row("Journo Watch", journo_html)
+
     tweets_section = ""
     if tweets_html:
         tweets_section = _section_row("Journo Top Tweets", tweets_html)
 
     body_sections = (
-        _section_row("Top Stories — AFL.com.au", afl_html,   first=True)
+        _section_row("Top Stories — AFL.com.au", afl_html, first=True)
         + _section_row("Top Stories — Other Media", media_html)
+        + journo_section
         + tweets_section
         + _section_row("Fan Forums", forum_html)
     )
@@ -897,7 +1046,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v16"
+SCRIPT_VERSION = "v17"
 
 
 def main() -> None:
@@ -905,24 +1054,27 @@ def main() -> None:
     now_aest  = datetime.now(AEST)
     time_slot = get_time_slot()
 
+    # How many hours back this edition covers (feeds both Journo Watch and tweet search)
+    hours_lookback = SLOT_LOOKBACK_HOURS.get(time_slot, 6)
+
     day_date = now_aest.strftime("%A %-d %B")
-    print(f"\n=== AFL Digest {SCRIPT_VERSION} — {time_slot} — {day_date} ===\n")
+    print(f"\n=== AFL Digest {SCRIPT_VERSION} — {time_slot} — {day_date} (lookback {hours_lookback}h) ===\n")
 
     # ── Section 1a: AFL.com.au ──
     # Skip filter_articles here — it's too aggressive for the official site and
     # drops many valid articles that mention scores/goals in a non-results context.
     # Claude handles the selection and exclusion instead.
-    print("[1/5] Fetching AFL.com.au feed...")
+    print("[1/6] Fetching AFL.com.au feed...")
     afl_raw    = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
     afl_recent = filter_by_recency(afl_raw, "AFL.com.au")
     afl_recent = enrich_authors(afl_recent)
     print(f"      {len(afl_raw)} fetched → {len(afl_recent)} recent (no pre-filter)")
 
-    print("[2/5] Summarising AFL.com.au stories with Claude...")
+    print("[2/6] Summarising AFL.com.au stories with Claude...")
     afl_html = summarise_afl_official(afl_recent, client)
 
     # ── Section 1b: Other Media ──
-    print("[3/5] Fetching other media feeds...")
+    print("[3/6] Fetching other media feeds...")
     media_raw      = fetch_rss_articles(OTHER_MEDIA_FEEDS)
     media_filtered = filter_articles(media_raw)
     media_recent   = filter_by_recency(media_filtered, "media")
@@ -932,16 +1084,25 @@ def main() -> None:
     print("[3b]  Summarising media stories with Claude (bias: exclusives/breaking/opinion)...")
     media_html = summarise_media_news(media_recent, client)
 
-    # ── Section 2: Journo Top Tweets ──
-    print("[4/5] Fetching journalist tweets via Claude web search...")
-    tweets_html = fetch_journalist_tweets(client)
+    # ── Section 2a: Journo Watch ──
+    print(f"[4/6] Fetching Journo Watch articles via Claude web search ({hours_lookback}h lookback)...")
+    journo_items = fetch_journo_news(client, hours_lookback)
+    journo_html  = render_journo_watch(journo_items)
+    if journo_html:
+        print(f"      Journo Watch: {len(journo_items)} item(s) — including section")
+    else:
+        print("      Journo Watch: nothing found — omitting section")
+
+    # ── Section 2b: Journo Top Tweets ──
+    print(f"[5/6] Fetching journalist tweets via Claude web search ({hours_lookback}h lookback)...")
+    tweets_html = fetch_journalist_tweets(client, hours=hours_lookback)
     if tweets_html:
         print("      Journalist tweets found — including section")
     else:
         print("      No journalist tweets found — omitting section")
 
     # ── Section 3: Fan Forums ──
-    print("[5/5] Fetching Reddit threads...")
+    print("[6/6] Fetching Reddit threads...")
     reddit     = fetch_reddit_threads()
     print(f"      {len(reddit)} threads")
     forum_html = render_forum_section(reddit)
@@ -951,7 +1112,9 @@ def main() -> None:
     day_str  = now_aest.strftime("%A")
     subject  = f"{time_slot} - {day_str} {date_str}"
 
-    html = build_email_html(afl_html, media_html, tweets_html, forum_html, time_slot, now_aest)
+    html = build_email_html(
+        afl_html, media_html, tweets_html, journo_html, forum_html, time_slot, now_aest
+    )
     print(f"\nSending: {subject}")
     send_email(html, subject)
     print("\nDone.\n")
