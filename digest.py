@@ -234,13 +234,13 @@ def filter_articles(articles: list[dict]) -> list[dict]:
     return result
 
 
-def filter_by_recency(articles: list[dict], label: str = "") -> list[dict]:
+def filter_by_recency(articles: list[dict], label: str = "", hours: int = 10) -> list[dict]:
     """
-    Sort by publish date (newest first) and prefer articles from the last 10 hours.
+    Sort by publish date (newest first) and prefer articles from the last `hours` hours.
     Falls back to all articles if fewer than 5 recent ones exist.
     """
     now    = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=10)
+    cutoff = now - timedelta(hours=hours)
 
     dated   = [a for a in articles if a.get("published")]
     undated = [a for a in articles if not a.get("published")]
@@ -252,11 +252,11 @@ def filter_by_recency(articles: list[dict], label: str = "") -> list[dict]:
 
     tag = f" [{label}]" if label else ""
     if len(recent) >= 5:
-        print(f"      Recency{tag}: {len(recent)} from last 10h "
+        print(f"      Recency{tag}: {len(recent)} from last {hours}h "
               f"(+ {len(older)} older, {len(undated)} undated discarded)")
         return recent + undated[:3]
     else:
-        print(f"      Recency{tag}: only {len(recent)} recent — using all {len(articles)}")
+        print(f"      Recency{tag}: only {len(recent)} recent in {hours}h — using all {len(articles)}")
         return dated + undated
 
 
@@ -1046,7 +1046,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v17"
+SCRIPT_VERSION = "v18"
 
 
 def main() -> None:
@@ -1066,7 +1066,7 @@ def main() -> None:
     # Claude handles the selection and exclusion instead.
     print("[1/6] Fetching AFL.com.au feed...")
     afl_raw    = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
-    afl_recent = filter_by_recency(afl_raw, "AFL.com.au")
+    afl_recent = filter_by_recency(afl_raw, "AFL.com.au", hours=hours_lookback)
     afl_recent = enrich_authors(afl_recent)
     print(f"      {len(afl_raw)} fetched → {len(afl_recent)} recent (no pre-filter)")
 
@@ -1094,8 +1094,10 @@ def main() -> None:
         print("      Journo Watch: nothing found — omitting section")
 
     # ── Section 2b: Journo Top Tweets ──
-    print(f"[5/6] Fetching journalist tweets via Claude web search ({hours_lookback}h lookback)...")
-    tweets_html = fetch_journalist_tweets(client, hours=hours_lookback)
+    # Use at least 9h for tweets — shorter windows risk returning nothing on quiet periods
+    tweet_hours = max(hours_lookback, 9)
+    print(f"[5/6] Fetching journalist tweets via Claude web search ({tweet_hours}h lookback)...")
+    tweets_html = fetch_journalist_tweets(client, hours=tweet_hours)
     if tweets_html:
         print("      Journalist tweets found — including section")
     else:
