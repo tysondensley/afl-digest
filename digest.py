@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""AFL news digest — fetches RSS, forum threads, and web search, then emails a summary."""
+"""AFL news digest — fetches RSS and Reddit, scores articles by recency and
+news-value keywords, then emails a curated summary.
+
+No AI API required — fully free to run.
+"""
 
 import os
 import re
@@ -13,7 +17,6 @@ from email.mime.text import MIMEText
 import feedparser
 import requests
 from bs4 import BeautifulSoup
-import anthropic
 
 # ---------------------------------------------------------------------------
 # Config
@@ -51,7 +54,7 @@ REDDIT_HEADERS = {
     "User-Agent": "AFL-Digest/1.0 (personal newsletter; by /u/afl_digest_bot)"
 }
 
-# Patterns that indicate match-report / results content — excluded
+# Patterns that indicate match-report / results content — penalised in scoring
 _EXCLUDE_RE = re.compile(
     r"\b("
     r"score[sd]?|full[\s\-]?time|half[\s\-]?time|quarter[s]?|"
@@ -62,35 +65,21 @@ _EXCLUDE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Patterns that suggest genuine news — boosted in priority
+# Patterns that suggest genuine news — boosted in scoring
 _INCLUDE_RE = re.compile(
     r"\b("
     r"trade[sd]?|trading|injur(y|ies|ed)|sign(ing|ed|s)?|contract|"
     r"suspension|suspended|deregistered|delisted|draft|recruit|"
     r"breaking|exclusive|interview|investigation|reveals?|confirms?|"
-    r"opinion|analysis|verdict|verdict"
+    r"opinion|analysis|verdict"
     r")\b",
     re.IGNORECASE,
 )
 
 RECIPIENT = "Tyson.Densley@afl.com.au"
-MODEL     = "claude-sonnet-4-6"
 
-# AFL journalists to monitor on X for the Journo Top Tweets section
-JOURNALISTS = [
-    ("Cal Twomey",      "@CalTwomey"),
-    ("Mitch Cleary",    "@mitchcleary"),
-    ("Tom Morris",      "@tommorris32"),
-    ("Xander McGuire",  "@xandermcguire"),
-    ("Ryan Daniels",    "@ryandaniels_"),
-    ("Riley Beveridge", "@RileyBeveridge"),
-    ("Josh Gabelich",   "@JoshGabelich"),
-    ("Michael Whiting", "@WhitingAFL"),
-    ("Nathan Schmook",  "@NathanSchmook"),
-    ("Emily Patterson", "@empaterson"),
-    ("Jay Clark",       "@JayClark7"),
-    ("Jon Ralph",       "@JonRalphHL"),
-]
+# How many hours back each time-slot edition looks
+SLOT_LOOKBACK_HOURS = {"Morning": 9, "Midday": 6, "Afternoon": 5, "Evening": 5}
 
 
 # ---------------------------------------------------------------------------
@@ -113,21 +102,7 @@ def get_time_slot() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Shared utility
-# ---------------------------------------------------------------------------
-
-def clean_claude_html(text: str) -> str:
-    """Strip markdown code fences that Claude sometimes wraps around output."""
-    text = text.strip()
-    text = re.sub(r"^`{3}[a-zA-Z]*\s*\n", "", text)
-    text = re.sub(r"\n`{3}\s*$", "", text)
-    text = re.sub(r"^`{3}", "", text).strip()
-    text = re.sub(r"`{3}$", "", text).strip()
-    return text
-
-
-# ---------------------------------------------------------------------------
-# RSS fetching & filtering (shared by both sections)
+# RSS fetching & filtering
 # ---------------------------------------------------------------------------
 
 def get_thumbnail(entry) -> str:
@@ -267,7 +242,7 @@ def filter_by_recency(
 
 
 # ---------------------------------------------------------------------------
-# Author enrichment (AFL.com.au only)
+# Author / thumbnail enrichment
 # ---------------------------------------------------------------------------
 
 def _scrape_afl_author(url: str) -> str:
@@ -308,7 +283,6 @@ def _scrape_og_image(url: str) -> str:
             tag = soup.find("meta", attrs=attr)
             if tag and tag.get("content", "").startswith("http"):
                 return tag["content"]
-        # Fallback: <link rel="image_src">
         link_tag = soup.find("link", rel="image_src")
         if link_tag and link_tag.get("href", "").startswith("http"):
             return link_tag["href"]
@@ -322,10 +296,8 @@ def enrich_thumbnails(articles: list[dict]) -> list[dict]:
     For media articles without a thumbnail, concurrently scrape the article
     page for an Open Graph image.
 
-    Google News redirect URLs (news.google.com/rss/articles/...) use JS
-    redirects so requests always lands on the Google News page itself and
-    scrapes the Google News logo. Those are skipped — no thumbnail is better
-    than a generic Google logo. Only direct article URLs are attempted.
+    Google News redirect URLs use JS redirects so requests always lands on
+    the Google News page itself — those are skipped to avoid the Google logo.
     """
     targets = [
         a for a in articles
@@ -395,12 +367,13 @@ def enrich_authors(articles: list[dict]) -> list[dict]:
 # News card rendering
 # ---------------------------------------------------------------------------
 
-def render_news_card(summary: str, article: dict, bold_title: bool = True) -> str:
+def render_news_card(article: dict, bold_title: bool = True) -> str:
     """Render a single news item as a card with link, byline, and optional thumbnail."""
     url    = article["link"]
     source = article["source"]
     author = article.get("author", "")
     thumb  = article.get("thumbnail", "")
+    title  = article["title"]
 
     byline = f'<span style="font-weight:600;">{source}</span>'
     if author:
@@ -409,7 +382,7 @@ def render_news_card(summary: str, article: dict, bold_title: bool = True) -> st
     title_weight = "bold" if bold_title else "normal"
     link = (
         f'<a href="{url}" style="font-size:14px;font-weight:{title_weight};color:#003087;'
-        f'text-decoration:none;line-height:1.45;display:block;">{summary}</a>'
+        f'text-decoration:none;line-height:1.45;display:block;">{title}</a>'
     )
     meta = (
         f'<p style="margin:5px 0 0 0;font-size:13px;color:#888888;line-height:1.4;">'
@@ -437,126 +410,69 @@ def render_news_card(summary: str, article: dict, bold_title: bool = True) -> st
 
 
 # ---------------------------------------------------------------------------
-# Section 1a — AFL.com.au top stories
+# Article selection — keyword + recency heuristic (no AI required)
 # ---------------------------------------------------------------------------
 
-def summarise_afl_official(
-    articles: list[dict],
-    client: anthropic.Anthropic,
-    hours_lookback: int = 9,
-) -> str:
-    """Select AFL.com.au articles — official club/league news, 4–5 items."""
+def _score_article(article: dict, now: datetime) -> float:
+    """
+    Score an article by news-value keywords and recency.
+    - _INCLUDE_RE match:  +5  (injury, signing, trade, exclusive, etc.)
+    - _EXCLUDE_RE match:  -8  (match scores, highlights, results)
+    - Recency bonus:      up to +8 for brand-new, 0 at ~20h old
+    """
+    text  = f"{article['title']} {article['snippet']}"
+    score = 0.0
+    if _INCLUDE_RE.search(text):
+        score += 5.0
+    if _EXCLUDE_RE.search(text):
+        score -= 8.0
+    if article.get("published"):
+        age_hours = (now - article["published"]).total_seconds() / 3600
+        score += max(0.0, 8.0 - age_hours * 0.4)   # 0 points at ~20 h old
+    return score
+
+
+def select_afl_official(articles: list[dict]) -> str:
+    """Pick the top 5 AFL.com.au articles by heuristic score."""
     if not articles:
         return "<p>No AFL.com.au news found this period.</p>"
 
-    now  = datetime.now(timezone.utc)
-    pool = articles[:20]
-    numbered = "\n".join(
-        f"[{i}] {a['title']} — {a['snippet'][:180]}"
-        + (
-            f" [{int((now - a['published']).total_seconds() / 3600)}h ago]"
-            if a.get("published") else " [age unknown]"
-        )
-        for i, a in enumerate(pool)
-    )
+    now    = datetime.now(timezone.utc)
+    scored = sorted(articles, key=lambda a: _score_article(a, now), reverse=True)
+    top    = scored[:5]
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=50,
-        system=(
-            "You are a senior AFL editor reviewing stories from AFL.com.au. "
-            f"This digest covers the last {hours_lookback} hours. "
-            f"STRONGLY prefer articles published within {hours_lookback} hours "
-            f"(shown as e.g. '2h ago'). Only include older articles if nothing "
-            f"recent is newsworthy.\n\n"
-            "Pick the 4–5 most newsworthy items.\n\n"
-            "PREFER: injuries, team selections, signings, suspensions, "
-            "tribunal decisions, rule changes, official announcements, player milestones.\n\n"
-            "SKIP: pure match score reports, generic highlights packages, "
-            "live blog recaps, round results round-ups, and club sponsor content.\n\n"
-            "Return ONLY the index numbers of the selected articles, one per line. "
-            "Nothing else — no summaries, no punctuation, no explanations."
-        ),
-        messages=[{"role": "user", "content": numbered}],
-    )
-
-    raw = response.content[0].text.strip()
-    print(f"  Claude AFL.com.au selected indices:\n{raw}\n")
-    return _parse_index_response(raw, pool)
+    print(f"  AFL.com.au heuristic top {len(top)}: "
+          + " | ".join(a["title"][:45] for a in top))
+    return "\n".join(render_news_card(a, bold_title=True) for a in top)
 
 
-# ---------------------------------------------------------------------------
-# Section 1b — Other media top stories
-# ---------------------------------------------------------------------------
-
-def summarise_media_news(articles: list[dict], client: anthropic.Anthropic) -> str:
+def select_media_news(articles: list[dict]) -> str:
     """
-    Select stories from the wider media pool — strong bias toward exclusives,
-    breaking news, and opinion. Displays actual article headlines verbatim.
+    Pick the top 6–7 other-media articles by heuristic score,
+    capping at 2 articles per source for variety.
     """
     if not articles:
         return "<p>No media news found this period.</p>"
 
-    pool = articles[:30]
-    numbered = "\n".join(
-        f"[{i}] ({a['source']}) {a['title']} — {a['snippet'][:180]}"
-        for i, a in enumerate(pool)
-    )
+    now    = datetime.now(timezone.utc)
+    scored = sorted(articles, key=lambda a: _score_article(a, now), reverse=True)
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=50,
-        system=(
-            "You are a senior AFL editor curating the best journalism from across Australian media. "
-            "Pick the 6–7 most valuable stories from the list below.\n\n"
-            "STRONG preference for:\n"
-            "- EXCLUSIVES and BREAKING news (scoops, first reports, inside sources)\n"
-            "- OPINION and ANALYSIS from prominent journalists (e.g. regular Saturday columns "
-            "  from established AFL writers like Caroline Wilson — these are must-reads)\n"
-            "- INVESTIGATIONS, controversies, and governance stories\n"
-            "- Injury updates, trade whispers, and contract news\n\n"
-            "REJECT any story where:\n"
-            "- AFL, a club, player, or official is only a minor or incidental mention\n"
-            "  (e.g. a business story that names an ex-player as a peripheral investor)\n"
-            "- The story is primarily about another sport, industry, or topic\n"
-            "- It is a rewrite or aggregation of a story already broken by another outlet\n"
-            "- It is a generic match preview, round summary, or club PR\n\n"
-            "Only include a story if AFL football is the PRIMARY subject.\n\n"
-            "Return ONLY the index numbers of the articles you selected, one per line. "
-            "Nothing else — no summaries, no punctuation, no explanations."
-        ),
-        messages=[{"role": "user", "content": numbered}],
-    )
+    source_counts: dict[str, int] = {}
+    selected: list[dict] = []
+    for a in scored:
+        src = a["source"]
+        if source_counts.get(src, 0) < 2:
+            selected.append(a)
+            source_counts[src] = source_counts.get(src, 0) + 1
+        if len(selected) == 7:
+            break
 
-    raw = response.content[0].text.strip()
-    print(f"  Claude media selected indices:\n{raw}\n")
-    return _parse_index_response(raw, pool, bold_title=False)
-
-
-def _parse_index_response(raw: str, pool: list[dict], bold_title: bool = True) -> str:
-    """Parse Claude's index-number-only response and render cards using actual article titles."""
-    cards: list[str] = []
-    seen_idx: set[int] = set()
-    for line in raw.splitlines():
-        idx_str = re.sub(r"[^\d]", "", line.strip())
-        if not idx_str:
-            continue
-        idx = int(idx_str)
-        if 0 <= idx < len(pool) and idx not in seen_idx:
-            seen_idx.add(idx)
-            article = pool[idx]
-            # Use the real article headline — never paraphrase
-            cards.append(render_news_card(article["title"], article, bold_title=bold_title))
-
-    if not cards:
-        print("  Warning: no indices parsed — falling back")
-        return "<p>News selection unavailable this period.</p>"
-
-    return "\n".join(cards)
+    print(f"  Other media heuristic: {len(selected)} selected from {len(articles)}")
+    return "\n".join(render_news_card(a, bold_title=False) for a in selected)
 
 
 # ---------------------------------------------------------------------------
-# Section 3 — Fan Forums (Reddit)
+# Fan Forums (Reddit)
 # ---------------------------------------------------------------------------
 
 def fetch_reddit_threads() -> list[dict]:
@@ -564,7 +480,6 @@ def fetch_reddit_threads() -> list[dict]:
     Fetch r/AFL hot threads. Tries JSON API first (full metadata), then falls
     back to RSS via feedparser (title + URL only) if the IP is blocked.
     """
-    # ── Attempt 1 & 2: JSON API ──────────────────────────────────────────
     for base in ("https://old.reddit.com", "https://www.reddit.com"):
         url = f"{base}/r/AFL/hot.json?limit=15"
         try:
@@ -590,7 +505,6 @@ def fetch_reddit_threads() -> list[dict]:
         except Exception as exc:
             print(f"  Reddit JSON warning ({base}): {exc}")
 
-    # ── Attempt 3: RSS feed (fewer fields, but different code path) ───────
     for rss_base in ("https://www.reddit.com", "https://old.reddit.com"):
         rss_url = f"{rss_base}/r/AFL/hot.rss"
         try:
@@ -603,7 +517,6 @@ def fetch_reddit_threads() -> list[dict]:
                 url   = getattr(entry, "link",  "").strip()
                 if not title or not url:
                     continue
-                # RSS titles are often prefixed with "r/AFL: " — strip it
                 title = re.sub(r"^r/AFL:\s*", "", title)
                 threads.append({
                     "title":    title,
@@ -625,7 +538,7 @@ def fetch_reddit_threads() -> list[dict]:
 
 
 def render_forum_section(reddit: list[dict]) -> str:
-    """Render Reddit hot threads directly — no Claude summarisation needed."""
+    """Render Reddit hot threads as a list of linked titles."""
     if not reddit:
         return "<p style='font-size:14px;color:#555;'>No Reddit threads available this period.</p>"
 
@@ -645,314 +558,13 @@ def render_forum_section(reddit: list[dict]) -> str:
             f'{t["title"]}</a>{flair_html}'
             f'<p style="margin:5px 0 0 0;font-size:12px;color:#888888;">'
             f'r/AFL'
-            + (f' &nbsp;&middot;&nbsp; {t["comments"]:,} comments &nbsp;&middot;&nbsp; {t["score"]:,} upvotes' if t["comments"] is not None else '')
+            + (f' &nbsp;&middot;&nbsp; {t["comments"]:,} comments'
+               f' &nbsp;&middot;&nbsp; {t["score"]:,} upvotes'
+               if t["comments"] is not None else '')
             + '</p>'
             f'</div>'
         )
     return "\n".join(items)
-
-
-# ---------------------------------------------------------------------------
-# Section 2 — Journo Top Tweets
-# ---------------------------------------------------------------------------
-
-def _run_agentic_search(client: anthropic.Anthropic, system: str, user_prompt: str) -> str:
-    """Run a Claude web-search agentic loop and return the final text response."""
-    messages: list[dict] = [{"role": "user", "content": user_prompt}]
-    for _ in range(8):
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1500,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=system,
-            messages=messages,
-        )
-        if response.stop_reason == "end_turn":
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text.strip()
-            return ""
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = [
-                {"type": "tool_result", "tool_use_id": b.id, "content": ""}
-                for b in response.content if b.type == "tool_use"
-            ]
-            if tool_results:
-                messages.append({"role": "user", "content": tool_results})
-    return ""
-
-
-X_JOURNALIST_LIST = "https://x.com/i/lists/749517718789906432"
-
-# Fallback handles used in search queries if the list can't be accessed directly
-_FALLBACK_HANDLES = " OR ".join(h for _, h in JOURNALISTS)
-
-# ── Journo Watch ─────────────────────────────────────────────────────────────
-
-# 18 key AFL journalists whose published articles/reports are surfaced each edition
-JOURNO_WATCH_JOURNALISTS = [
-    "Tom Morris",      "Mitch Cleary",    "Xander McGuire",  "Jay Clark",
-    "Sam McClure",     "Callum Twomey",   "Riley Beveridge", "Josh Gabelich",
-    "Michael Whiting", "Nathan Schmook",  "Emily Patterson", "Owen Leonard",
-    "Ryan Daniels",    "Theo Doropoulos", "Jon Ralph",       "Sam Edmund",
-    "Peter Ryan",      "Michael Gleeson",
-]
-
-# Batches of 4–5 — keeps each web-search prompt focused
-_JOURNO_BATCHES = [
-    JOURNO_WATCH_JOURNALISTS[i : i + 5]
-    for i in range(0, len(JOURNO_WATCH_JOURNALISTS), 5)
-]
-
-# How many hours back each time-slot edition should look
-# Morning 9h: the 9pm Evening edition covers the prior evening, so 9h is right
-SLOT_LOOKBACK_HOURS = {"Morning": 9, "Midday": 6, "Afternoon": 5, "Evening": 5}
-
-
-def fetch_journalist_tweets(client: anthropic.Anthropic, hours: int = 9) -> str | None:
-    """
-    Use Claude web search to find recent high-engagement AFL tweets from journalists
-    on the curated X list. Returns a 2-column HTML card grid, or None if nothing found.
-    """
-    fallback_handles = _FALLBACK_HANDLES
-
-    system = (
-        "You are an AFL media analyst finding the most engaging recent tweets from "
-        f"accounts on this X list: {X_JOURNALIST_LIST}\n\n"
-        f"Find tweets posted in the last {hours} hours only — nothing older.\n\n"
-        "Include tweets from:\n"
-        "- Individual journalists (HIGHEST priority — Cal Twomey, Mitch Cleary, Jon Ralph, etc.)\n"
-        "- AFL media outlet accounts on the list (Fox Footy, The Age Sport, SEN, etc.) — "
-        "include if the tweet itself is breaking news or getting strong engagement\n\n"
-        "Only include tweets that show clear engagement signals: high reply/quote activity, "
-        "breaking a story ahead of mainstream coverage, or a take generating real debate. "
-        "If nothing meets this bar, return NOTHING — do not pad with low-engagement posts.\n\n"
-        "Skip: retweets, replies, match score updates, promotional content.\n\n"
-        "Return results as lines in this EXACT format "
-        "(use <<< as delimiter — never a pipe):\n"
-        "FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n\n"
-        "Return 4–6 lines if possible (even numbers fill the 2-column grid best). "
-        "Return NOTHING if nothing qualifies. No other text, markdown, or explanation."
-    )
-    user_prompt = (
-        f"Search X list {X_JOURNALIST_LIST} for high-engagement AFL tweets from the "
-        f"last {hours} hours only.\n"
-        f"Supplementary search: site:x.com ({fallback_handles}) AFL\n"
-        "Rank individual journalist tweets above outlet account tweets. "
-        "Only surface tweets with real traction — being quoted, lots of replies, "
-        "or breaking news before mainstream outlets pick it up.\n"
-        "Format: FULL_NAME<<<@HANDLE<<<TWEET_TEXT<<<TWEET_URL\n"
-        "Reply NOTHING if nothing qualifies."
-    )
-
-    try:
-        raw = _run_agentic_search(client, system, user_prompt)
-        print(f"  Journalist tweets raw:\n{raw[:300]}\n")
-        if not raw or raw.upper() == "NOTHING":
-            return None
-        return _render_tweet_cards(raw)
-    except Exception as exc:
-        print(f"  Journalist tweets warning: {exc}")
-        return None
-
-
-def _render_tweet_cards(raw: str) -> str | None:
-    """
-    Parse <<< -delimited tweet lines and render as a 2-column card grid.
-    Each card has a left blue accent border styled like a tweet embed.
-    """
-    card_html_list = []
-    for line in raw.strip().splitlines():
-        line = line.strip()
-        if "<<<" not in line:
-            continue
-        parts = [p.strip() for p in line.split("<<<")]
-        if len(parts) < 3:
-            continue
-        name       = parts[0]
-        handle     = parts[1] if len(parts) > 1 else ""
-        tweet_text = parts[2] if len(parts) > 2 else ""
-        tweet_url  = parts[3] if len(parts) > 3 else "#"
-
-        if not name or not tweet_text:
-            continue
-
-        card_html_list.append(
-            f'<div style="background:#f7f9fc;border-left:3px solid #1d9bf0;'
-            f'border-radius:0 6px 6px 0;padding:12px 14px;height:100%;box-sizing:border-box;">'
-            f'<p style="margin:0 0 6px 0;font-size:12px;line-height:1.3;">'
-            f'<span style="font-weight:bold;color:#1d9bf0;">{name}</span>'
-            f'&nbsp;<span style="color:#999999;font-weight:normal;">{handle}</span></p>'
-            f'<p style="margin:0 0 10px 0;font-size:13px;color:#222222;line-height:1.5;">'
-            f'{tweet_text}</p>'
-            f'<a href="{tweet_url}" style="font-size:11px;color:#1d9bf0;text-decoration:none;">'
-            f'View on X &rarr;</a>'
-            f'</div>'
-        )
-
-    if not card_html_list:
-        return None
-
-    # Lay cards out in a 2-column table, filling left-to-right
-    rows = []
-    for i in range(0, len(card_html_list), 2):
-        left  = card_html_list[i]
-        right = card_html_list[i + 1] if i + 1 < len(card_html_list) else ""
-        rows.append(
-            f'<tr>'
-            f'<td width="49%" valign="top" style="padding-right:10px;padding-bottom:14px;">{left}</td>'
-            f'<td width="2%"></td>'
-            f'<td width="49%" valign="top" style="padding-bottom:14px;">{right}</td>'
-            f'</tr>'
-        )
-
-    return (
-        f'<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">'
-        + "".join(rows)
-        + f'</table>'
-    )
-
-
-# ---------------------------------------------------------------------------
-# Section 2b — Journo Watch (articles / reported statements)
-# ---------------------------------------------------------------------------
-
-def fetch_journo_news(client: anthropic.Anthropic, hours_lookback: int) -> list[dict]:
-    """
-    Search for AFL articles or reported statements from JOURNO_WATCH_JOURNALISTS
-    published in the last `hours_lookback` hours, using Claude web search in batches.
-
-    Returns a deduplicated list of dicts:
-        {"journalist": str, "outlet": str, "summary": str, "url": str}
-    Returns an empty list if nothing is found (section is omitted).
-    """
-    system = (
-        "You are an AFL media researcher. For each journalist listed, search for any "
-        "AFL news, articles, or reported statements they have published in the given window.\n\n"
-        "Include: byline articles, breaking-news scoops, exclusive reports, "
-        "and any news coverage that prominently quotes their reporting.\n"
-        "Exclude: match scores, match results, round summaries, and promotional content.\n\n"
-        "Return ONLY items you actually find — do NOT invent or hallucinate entries.\n"
-        "For each item output one line in this exact format (use <<< as delimiter):\n"
-        "JOURNALIST_NAME<<<OUTLET<<<ONE_SENTENCE_SUMMARY<<<URL\n\n"
-        "Skip any journalist for whom nothing is found. "
-        "Return the single word NOTHING if there are no results at all. "
-        "No other text, markdown, or explanation."
-    )
-
-    results: list[dict] = []
-    seen_keys: set[str] = set()
-
-    for batch_idx, batch in enumerate(_JOURNO_BATCHES):
-        # Space batches 15 s apart — web-search responses are token-heavy and
-        # firing them back-to-back hits the 30k input-tokens/min rate limit.
-        if batch_idx > 0:
-            _time.sleep(15)
-
-        batch_str = ", ".join(batch)
-        user_prompt = (
-            f"Find any AFL news, articles, or reported statements from the following journalists "
-            f"in the last {hours_lookback} hours: {batch_str}.\n\n"
-            "Include breaking news, byline articles, and news coverage quoting their reporting.\n"
-            "Exclude match scores, results, and promotional content.\n\n"
-            "Return one line per item:\n"
-            "JOURNALIST_NAME<<<OUTLET<<<ONE_SENTENCE_SUMMARY<<<URL\n\n"
-            "Return NOTHING if nothing qualifies."
-        )
-
-        def _run_batch() -> str:
-            return _run_agentic_search(client, system, user_prompt)
-
-        try:
-            raw = _run_batch()
-        except Exception as exc:
-            if "429" in str(exc) or "rate_limit" in str(exc):
-                print(f"  Journo Watch rate-limited on batch {batch_idx+1} — waiting 30s...")
-                _time.sleep(30)
-                try:
-                    raw = _run_batch()
-                except Exception as exc2:
-                    print(f"  Journo Watch batch {batch_idx+1} failed after retry: {exc2}")
-                    continue
-            else:
-                print(f"  Journo Watch batch warning ({batch_str[:40]}): {exc}")
-                continue
-
-        label = batch_str[:50]
-        print(f"  Journo Watch [{label}...] raw:\n{raw[:250]}\n")
-        if not raw or raw.strip().upper() == "NOTHING":
-            continue
-
-        for line in raw.strip().splitlines():
-            line = line.strip()
-            if "<<<" not in line:
-                continue
-            parts = [p.strip() for p in line.split("<<<")]
-            if len(parts) < 3:
-                continue
-            journalist = parts[0]
-            outlet     = parts[1] if len(parts) > 1 else ""
-            summary    = parts[2] if len(parts) > 2 else ""
-            url        = parts[3] if len(parts) > 3 else ""
-
-            if not journalist or not summary:
-                continue
-
-            # Deduplicate: prefer URL as key, fall back to summary prefix
-            dedup_key = (url or summary.lower()[:80])
-            if dedup_key in seen_keys:
-                continue
-            seen_keys.add(dedup_key)
-            seen_keys.add(summary.lower()[:80])   # also block near-duplicate summaries
-
-            results.append({
-                "journalist": journalist,
-                "outlet":     outlet,
-                "summary":    summary,
-                "url":        url,
-            })
-
-    print(f"  Journo Watch: {len(results)} item(s) found")
-    return results
-
-
-def render_journo_watch(items: list[dict]) -> str | None:
-    """
-    Render Journo Watch items as styled rows.
-    Format: Journalist (Outlet) — one-sentence summary + clickable link
-    Returns None if the list is empty (section is omitted from email).
-    """
-    if not items:
-        return None
-
-    rows = []
-    for item in items:
-        journalist = item.get("journalist", "")
-        outlet     = item.get("outlet", "")
-        summary    = item.get("summary", "")
-        url        = item.get("url", "")
-
-        byline = f'<strong>{journalist}</strong>'
-        if outlet:
-            byline += f' <span style="color:#888888;font-weight:normal;">({outlet})</span>'
-
-        if url and url not in ("#", ""):
-            content_html = (
-                f'<a href="{url}" style="color:#003087;text-decoration:none;">'
-                f'{summary}</a>'
-            )
-        else:
-            content_html = summary
-
-        rows.append(
-            f'<div style="margin-bottom:12px;padding-bottom:12px;'
-            f'border-bottom:1px solid #eeeeee;font-size:14px;line-height:1.5;color:#333333;">'
-            f'{byline} &mdash; {content_html}'
-            f'</div>'
-        )
-
-    return "\n".join(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -976,30 +588,18 @@ def _section_row(heading: str, content: str, first: bool = False) -> str:
 
 
 def build_email_html(
-    afl_html:    str,
-    media_html:  str,
-    tweets_html: str | None,
-    journo_html: str | None,
-    forum_html:  str,
-    time_slot:   str,
-    now_aest:    datetime,
+    afl_html:   str,
+    media_html: str,
+    forum_html: str,
+    time_slot:  str,
+    now_aest:   datetime,
 ) -> str:
     day_date  = now_aest.strftime("%A %-d %B %Y")
     generated = now_aest.strftime("%-I:%M %p AEST")
 
-    journo_section = ""
-    if journo_html:
-        journo_section = _section_row("Journo Watch", journo_html)
-
-    tweets_section = ""
-    if tweets_html:
-        tweets_section = _section_row("Journo Top Tweets", tweets_html)
-
     body_sections = (
         _section_row("Top Stories — AFL.com.au", afl_html, first=True)
         + _section_row("Top Stories — Other Media", media_html)
-        + journo_section
-        + tweets_section
         + _section_row("Fan Forums", forum_html)
     )
 
@@ -1084,81 +684,50 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v19"
+SCRIPT_VERSION = "v21"
 
 
 def main() -> None:
-    client    = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     now_aest  = datetime.now(AEST)
     time_slot = get_time_slot()
-
-    # How many hours back this edition covers (feeds both Journo Watch and tweet search)
     hours_lookback = SLOT_LOOKBACK_HOURS.get(time_slot, 6)
 
     day_date = now_aest.strftime("%A %-d %B")
     print(f"\n=== AFL Digest {SCRIPT_VERSION} — {time_slot} — {day_date} (lookback {hours_lookback}h) ===\n")
 
     # ── Section 1a: AFL.com.au ──
-    # Skip filter_articles here — it's too aggressive for the official site and
-    # drops many valid articles that mention scores/goals in a non-results context.
-    # Claude handles the selection and exclusion instead.
-    print("[1/6] Fetching AFL.com.au feed...")
+    print("[1/4] Fetching AFL.com.au feed...")
     afl_raw    = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
-    # min_recent=1: never fall back to the full pool if any recent article exists
-    afl_recent = filter_by_recency(afl_raw, "AFL.com.au", hours=hours_lookback, min_recent=1)
-    afl_recent = enrich_authors(afl_recent)
-    print(f"      {len(afl_raw)} fetched → {len(afl_recent)} after recency filter")
-
-    print("[2/6] Summarising AFL.com.au stories with Claude...")
-    afl_html = summarise_afl_official(afl_recent, client, hours_lookback=hours_lookback)
+    # min_recent=3: use only fresh articles when at least 3 exist within the window;
+    # fall back to full pool (scored by recency) only when the feed is quiet.
+    afl_pool   = filter_by_recency(afl_raw, "AFL.com.au", hours=hours_lookback, min_recent=3)
+    afl_pool   = enrich_authors(afl_pool)
+    print(f"      {len(afl_raw)} fetched → {len(afl_pool)} in pool")
+    afl_html   = select_afl_official(afl_pool)
 
     # ── Section 1b: Other Media ──
-    print("[3/6] Fetching other media feeds...")
+    print("[2/4] Fetching other media feeds...")
     media_raw      = fetch_rss_articles(OTHER_MEDIA_FEEDS)
     media_filtered = filter_articles(media_raw)
     media_recent   = filter_by_recency(media_filtered, "media")
     media_recent   = enrich_thumbnails(media_recent)
     print(f"      {len(media_raw)} fetched → {len(media_filtered)} filtered → {len(media_recent)} recent")
+    media_html = select_media_news(media_recent)
 
-    print("[3b]  Summarising media stories with Claude (bias: exclusives/breaking/opinion)...")
-    media_html = summarise_media_news(media_recent, client)
-
-    # ── Section 2a: Journo Watch ──
-    print(f"[4/6] Fetching Journo Watch articles via Claude web search ({hours_lookback}h lookback)...")
-    journo_items = fetch_journo_news(client, hours_lookback)
-    journo_html  = render_journo_watch(journo_items)
-    if journo_html:
-        print(f"      Journo Watch: {len(journo_items)} item(s) — including section")
-    else:
-        print("      Journo Watch: nothing found — omitting section")
-
-    # ── Section 2b: Journo Top Tweets ──
-    # Wait before tweet fetch so the token-per-minute bucket refills after Journo Watch
-    _time.sleep(20)
-    # Use at least 9h for tweets — shorter windows risk returning nothing on quiet periods
-    tweet_hours = max(hours_lookback, 9)
-    print(f"[5/6] Fetching journalist tweets via Claude web search ({tweet_hours}h lookback)...")
-    tweets_html = fetch_journalist_tweets(client, hours=tweet_hours)
-    if tweets_html:
-        print("      Journalist tweets found — including section")
-    else:
-        print("      No journalist tweets found — omitting section")
-
-    # ── Section 3: Fan Forums ──
-    print("[6/6] Fetching Reddit threads...")
+    # ── Section 2: Fan Forums ──
+    print("[3/4] Fetching Reddit threads...")
     reddit     = fetch_reddit_threads()
     print(f"      {len(reddit)} threads")
     forum_html = render_forum_section(reddit)
 
     # ── Email ──
+    print("[4/4] Sending email...")
     date_str = now_aest.strftime("%-d %B")
     day_str  = now_aest.strftime("%A")
     subject  = f"{time_slot} - {day_str} {date_str}"
 
-    html = build_email_html(
-        afl_html, media_html, tweets_html, journo_html, forum_html, time_slot, now_aest
-    )
-    print(f"\nSending: {subject}")
+    html = build_email_html(afl_html, media_html, forum_html, time_slot, now_aest)
+    print(f"      Subject: {subject}")
     send_email(html, subject)
     print("\nDone.\n")
 
