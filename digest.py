@@ -723,8 +723,18 @@ def main() -> None:
     # ── Email ──
     print("[4/4] Sending email...")
     date_str = now_aest.strftime("%-d %B")
-    day_str  = now_aest.strftime("%A")
-    subject  = f"{time_slot} - {day_str} {date_str}"
+
+    # Use the top-scored headline as subject hook to drive opens
+    now_utc = datetime.now(timezone.utc)
+    all_articles = afl_pool + media_recent
+    top = max(all_articles, key=lambda a: _score_article(a, now_utc), default=None)
+    if top:
+        headline = top["title"]
+        if len(headline) > 65:
+            headline = headline[:64].rstrip() + "…"
+        subject = f"{headline} | {time_slot} {date_str}"
+    else:
+        subject = f"{time_slot} - {now_aest.strftime('%A')} {date_str}"
 
     html = build_email_html(afl_html, media_html, forum_html, time_slot, now_aest)
     print(f"      Subject: {subject}")
