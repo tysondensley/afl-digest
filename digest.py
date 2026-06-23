@@ -24,14 +24,10 @@ from bs4 import BeautifulSoup
 
 AEST = timezone(timedelta(hours=10))
 
-# AFL's own feed — gets its own dedicated section
 AFL_OFFICIAL_FEEDS = [
     ("AFL.com.au", "https://www.afl.com.au/rss"),
 ]
 
-# Media outlets — pooled into a single "Other Media" section.
-# Direct RSS blocked for Herald Sun / Fox Footy / paywalled outlets;
-# Google News RSS proxies their headlines without hitting the paywall.
 OTHER_MEDIA_FEEDS = [
     ("The Age",          "https://www.theage.com.au/rss/sport/afl.xml"),
     ("The Guardian",     "https://www.theguardian.com/sport/afl/rss"),
@@ -42,6 +38,11 @@ OTHER_MEDIA_FEEDS = [
     ("The Australian",   "https://news.google.com/rss/search?q=AFL+site:theaustralian.com.au&hl=en-AU&gl=AU&ceid=AU:en"),
     ("AFR",              "https://news.google.com/rss/search?q=AFL+site:afr.com&hl=en-AU&gl=AU&ceid=AU:en"),
 ]
+
+# AFL.com.au YouTube channel RSS
+AFL_YOUTUBE_RSS = "https://www.youtube.com/feeds/videos.xml?channel_id=UCVhg8kpRh6WXzihfaXsgw7Q"
+
+BIGFOOTY_URL = "https://www.bigfooty.com/forum/forums/afl-football.1/"
 
 HEADERS = {
     "User-Agent": (
@@ -54,7 +55,7 @@ REDDIT_HEADERS = {
     "User-Agent": "AFL-Digest/1.0 (personal newsletter; by /u/afl_digest_bot)"
 }
 
-# Patterns that indicate match-report / results content — penalised in scoring
+# Patterns that indicate match-report / results content
 _EXCLUDE_RE = re.compile(
     r"\b("
     r"score[sd]?|full[\s\-]?time|half[\s\-]?time|quarter[s]?|"
@@ -78,7 +79,6 @@ _INCLUDE_RE = re.compile(
 
 RECIPIENT = "Tyson.Densley@afl.com.au"
 
-# How many hours back each time-slot edition looks
 SLOT_LOOKBACK_HOURS = {"Morning": 9, "Midday": 6, "Afternoon": 5, "Evening": 5}
 
 
@@ -87,7 +87,6 @@ SLOT_LOOKBACK_HOURS = {"Morning": 9, "Midday": 6, "Afternoon": 5, "Evening": 5}
 # ---------------------------------------------------------------------------
 
 def get_time_slot() -> str:
-    """Return the human label for this run's time slot."""
     override = os.environ.get("TIME_SLOT")
     if override:
         return override
@@ -106,7 +105,6 @@ def get_time_slot() -> str:
 # ---------------------------------------------------------------------------
 
 def get_thumbnail(entry) -> str:
-    """Extract the best available image URL from a feedparser entry."""
     try:
         if getattr(entry, "media_thumbnail", None):
             return entry.media_thumbnail[0].get("url", "")
@@ -131,7 +129,6 @@ def get_thumbnail(entry) -> str:
 
 
 def _parse_entry_date(entry) -> datetime | None:
-    """Return a UTC datetime for an RSS entry's publish time, or None."""
     for field in ("published_parsed", "updated_parsed"):
         val = getattr(entry, field, None)
         if val:
@@ -143,31 +140,26 @@ def _parse_entry_date(entry) -> datetime | None:
 
 
 def fetch_rss_articles(feeds: list[tuple]) -> list[dict]:
-    """Fetch and parse RSS articles from a list of (source, url) tuples."""
     articles = []
     for source, url in feeds:
         try:
             feed = feedparser.parse(url, request_headers=HEADERS)
             for entry in feed.entries[:25]:
-                # Author: check every common location feedparser exposes
                 author = ""
                 if getattr(entry, "author_detail", None):
                     author = entry.author_detail.get("name", "")
                 if not author:
                     author = getattr(entry, "author", "")
                 if not author:
-                    tags = getattr(entry, "tags", [])
-                    for t in tags:
+                    for t in getattr(entry, "tags", []):
                         if (t.get("scheme") or "").endswith("creator"):
                             author = t.get("term", "")
                             break
 
                 raw_title = getattr(entry, "title", "").strip()
-                # Google News appends " - Source Name" to every title — strip it
                 if " - " in raw_title:
                     raw_title = raw_title.rsplit(" - ", 1)[0].strip()
 
-                # Strip leading "by"/"By " that some feeds include (with or without space)
                 author = re.sub(r"(?i)^by\s*", "", author.strip()).strip()
 
                 articles.append({
@@ -198,7 +190,6 @@ def filter_articles(articles: list[dict]) -> list[dict]:
             kept.append(a)
         else:
             deprioritised.append(a)
-    # Genuine news first; deduplicate by title prefix
     seen: set[str] = set()
     result = []
     for a in kept + deprioritised:
@@ -215,17 +206,11 @@ def filter_by_recency(
     hours: int = 10,
     min_recent: int = 5,
 ) -> list[dict]:
-    """
-    Sort by publish date (newest first) and prefer articles from the last `hours` hours.
-    Falls back to all articles only when fewer than `min_recent` recent ones exist.
-    Use min_recent=1 to avoid falling back whenever at least one recent article is found.
-    """
     now    = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=hours)
 
     dated   = [a for a in articles if a.get("published")]
     undated = [a for a in articles if not a.get("published")]
-
     dated.sort(key=lambda a: a["published"], reverse=True)
 
     recent = [a for a in dated if a["published"] >= cutoff]
@@ -246,7 +231,6 @@ def filter_by_recency(
 # ---------------------------------------------------------------------------
 
 def _scrape_afl_author(url: str) -> str:
-    """Try to extract a byline from an AFL.com.au article page."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=6)
         soup = BeautifulSoup(resp.text, "lxml")
@@ -269,7 +253,6 @@ def _scrape_afl_author(url: str) -> str:
 
 
 def _scrape_og_image(url: str) -> str:
-    """Fetch the Open Graph / Twitter Card image from a direct article URL."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=6, allow_redirects=True)
         soup = BeautifulSoup(resp.text, "lxml")
@@ -292,13 +275,6 @@ def _scrape_og_image(url: str) -> str:
 
 
 def enrich_thumbnails(articles: list[dict]) -> list[dict]:
-    """
-    For media articles without a thumbnail, concurrently scrape the article
-    page for an Open Graph image.
-
-    Google News redirect URLs use JS redirects so requests always lands on
-    the Google News page itself — those are skipped to avoid the Google logo.
-    """
     targets = [
         a for a in articles
         if not a.get("thumbnail")
@@ -332,10 +308,6 @@ def enrich_thumbnails(articles: list[dict]) -> list[dict]:
 
 
 def enrich_authors(articles: list[dict]) -> list[dict]:
-    """
-    For AFL.com.au articles without an author, concurrently scrape the article
-    page to find the byline.
-    """
     targets = [
         a for a in articles
         if a["source"] == "AFL.com.au" and not a["author"] and a["link"]
@@ -367,17 +339,31 @@ def enrich_authors(articles: list[dict]) -> list[dict]:
 # News card rendering
 # ---------------------------------------------------------------------------
 
+def _age_str(published: datetime | None) -> str:
+    """Return a short human-readable age string, e.g. '3h ago'."""
+    if not published:
+        return ""
+    age_hours = (datetime.now(timezone.utc) - published).total_seconds() / 3600
+    if age_hours < 1:
+        return f"{int(age_hours * 60)}m ago"
+    if age_hours < 24:
+        return f"{int(age_hours)}h ago"
+    return f"{int(age_hours / 24)}d ago"
+
+
 def render_news_card(article: dict, bold_title: bool = True) -> str:
-    """Render a single news item as a card with link, byline, and optional thumbnail."""
     url    = article["link"]
     source = article["source"]
     author = article.get("author", "")
     thumb  = article.get("thumbnail", "")
     title  = article["title"]
+    age    = _age_str(article.get("published"))
 
     byline = f'<span style="font-weight:600;">{source}</span>'
     if author:
         byline += f' &middot; <span style="font-style:italic;">{author}</span>'
+    if age:
+        byline += f' &middot; <span style="color:#aaaaaa;">{age}</span>'
 
     title_weight = "bold" if bold_title else "normal"
     link = (
@@ -410,16 +396,10 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Article selection — keyword + recency heuristic (no AI required)
+# Article selection — keyword + recency heuristic
 # ---------------------------------------------------------------------------
 
 def _score_article(article: dict, now: datetime) -> float:
-    """
-    Score an article by news-value keywords and recency.
-    - _INCLUDE_RE match:  +5  (injury, signing, trade, exclusive, etc.)
-    - _EXCLUDE_RE match:  -8  (match scores, highlights, results)
-    - Recency bonus:      up to +8 for brand-new, 0 at ~20h old
-    """
     text  = f"{article['title']} {article['snippet']}"
     score = 0.0
     if _INCLUDE_RE.search(text):
@@ -428,35 +408,25 @@ def _score_article(article: dict, now: datetime) -> float:
         score -= 8.0
     if article.get("published"):
         age_hours = (now - article["published"]).total_seconds() / 3600
-        score += max(0.0, 8.0 - age_hours * 0.4)   # 0 points at ~20 h old
+        score += max(0.0, 8.0 - age_hours * 0.4)
     return score
 
 
 def select_afl_official(articles: list[dict]) -> str:
-    """Pick the top 5 AFL.com.au articles by heuristic score."""
     if not articles:
         return "<p>No AFL.com.au news found this period.</p>"
-
     now    = datetime.now(timezone.utc)
     scored = sorted(articles, key=lambda a: _score_article(a, now), reverse=True)
     top    = scored[:5]
-
-    print(f"  AFL.com.au heuristic top {len(top)}: "
-          + " | ".join(a["title"][:45] for a in top))
+    print(f"  AFL.com.au top {len(top)}: " + " | ".join(a["title"][:40] for a in top))
     return "\n".join(render_news_card(a, bold_title=True) for a in top)
 
 
 def select_media_news(articles: list[dict]) -> str:
-    """
-    Pick the top 6–7 other-media articles by heuristic score,
-    capping at 2 articles per source for variety.
-    """
     if not articles:
         return "<p>No media news found this period.</p>"
-
     now    = datetime.now(timezone.utc)
     scored = sorted(articles, key=lambda a: _score_article(a, now), reverse=True)
-
     source_counts: dict[str, int] = {}
     selected: list[dict] = []
     for a in scored:
@@ -466,105 +436,293 @@ def select_media_news(articles: list[dict]) -> str:
             source_counts[src] = source_counts.get(src, 0) + 1
         if len(selected) == 7:
             break
-
-    print(f"  Other media heuristic: {len(selected)} selected from {len(articles)}")
+    print(f"  Other media: {len(selected)} selected from {len(articles)}")
     return "\n".join(render_news_card(a, bold_title=False) for a in selected)
 
 
 # ---------------------------------------------------------------------------
-# Fan Forums (Reddit)
+# Match results — articles we normally filter out, shown separately
 # ---------------------------------------------------------------------------
+
+def fetch_match_results(articles: list[dict], hours: int = 18) -> list[dict]:
+    """
+    Extract recent match-result articles from already-fetched AFL.com.au data.
+    These are the items _EXCLUDE_RE catches — surfaced here instead of dropped.
+    """
+    now    = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=hours)
+    results = []
+    seen: set[str] = set()
+    for a in articles:
+        text = f"{a['title']} {a['snippet']}"
+        if not _EXCLUDE_RE.search(text):
+            continue
+        if not a.get("published") or a["published"] < cutoff:
+            continue
+        key = a["title"].lower()[:60]
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(a)
+    results.sort(key=lambda a: a["published"], reverse=True)
+    print(f"  Match results: {len(results)} recent (last {hours}h)")
+    return results[:6]
+
+
+def render_results_section(results: list[dict]) -> str | None:
+    if not results:
+        return None
+    items = []
+    for r in results:
+        age = _age_str(r.get("published"))
+        age_html = f' &middot; <span style="color:#aaaaaa;">{age}</span>' if age else ""
+        items.append(
+            f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
+            f'<a href="{r["link"]}" style="font-size:14px;color:#003087;text-decoration:none;'
+            f'line-height:1.4;display:block;">{r["title"]}</a>'
+            f'<p style="margin:4px 0 0 0;font-size:12px;color:#888888;">'
+            f'<span style="font-weight:600;">{r["source"]}</span>{age_html}</p>'
+            f'</div>'
+        )
+    return "\n".join(items)
+
+
+# ---------------------------------------------------------------------------
+# YouTube — AFL.com.au channel RSS
+# ---------------------------------------------------------------------------
+
+# Short clips and social-only content are usually identifiable by all-emoji
+# titles or very short title length — exclude them.
+_YT_SKIP_RE = re.compile(r"^[^\w]{0,5}$|#afl\w|^\W+$", re.IGNORECASE)
+
+
+def fetch_youtube_videos(hours: int = 24) -> list[dict]:
+    """Fetch recent videos from the AFL.com.au YouTube channel via RSS."""
+    try:
+        feed = feedparser.parse(AFL_YOUTUBE_RSS)
+        now    = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=hours)
+        videos = []
+        for entry in feed.entries[:15]:
+            title = getattr(entry, "title", "").strip()
+            if not title or _YT_SKIP_RE.search(title):
+                continue
+            pub = _parse_entry_date(entry)
+            if pub and pub < cutoff:
+                continue
+            videos.append({
+                "title":     title,
+                "url":       getattr(entry, "link", ""),
+                "published": pub,
+            })
+            if len(videos) == 5:
+                break
+        print(f"  YouTube: {len(videos)} recent videos")
+        return videos
+    except Exception as exc:
+        print(f"  YouTube warning: {exc}")
+        return []
+
+
+def render_youtube_section(videos: list[dict]) -> str | None:
+    if not videos:
+        return None
+    items = []
+    for v in videos:
+        age     = _age_str(v.get("published"))
+        age_html = f' &middot; <span style="color:#aaaaaa;">{age}</span>' if age else ""
+        items.append(
+            f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
+            f'<a href="{v["url"]}" style="font-size:14px;color:#cc0000;font-weight:bold;'
+            f'text-decoration:none;line-height:1.4;display:block;">'
+            f'&#9654; {v["title"]}</a>'
+            f'<p style="margin:4px 0 0 0;font-size:12px;color:#888888;">'
+            f'AFL YouTube{age_html}</p>'
+            f'</div>'
+        )
+    return "\n".join(items)
+
+
+# ---------------------------------------------------------------------------
+# Fan Forums — Reddit + BigFooty
+# ---------------------------------------------------------------------------
+
+def _fetch_reddit_top_comment(thread_url: str) -> str | None:
+    """Fetch the top comment from a Reddit thread URL."""
+    try:
+        m = re.search(r"/comments/([a-z0-9]+)/", thread_url)
+        if not m:
+            return None
+        post_id = m.group(1)
+        url  = f"https://www.reddit.com/r/AFL/comments/{post_id}.json?limit=5&sort=top"
+        resp = requests.get(url, headers=REDDIT_HEADERS, timeout=10)
+        resp.raise_for_status()
+        data     = resp.json()
+        comments = data[1]["data"]["children"]
+        for c in comments:
+            body = c["data"].get("body", "").strip()
+            if body and len(body) > 20 and body not in ("[deleted]", "[removed]"):
+                if len(body) > 220:
+                    body = body[:218] + "…"
+                return body
+    except Exception:
+        pass
+    return None
+
 
 def fetch_reddit_threads() -> list[dict]:
     """
-    Fetch r/AFL hot threads. Tries JSON API first (full metadata), then falls
-    back to RSS via feedparser (title + URL only) if the IP is blocked.
+    Fetch r/AFL hot threads. Tries JSON API first, then RSS fallback.
+    Also fetches the top comment for the #1 thread.
     """
+    threads = []
+
     for base in ("https://old.reddit.com", "https://www.reddit.com"):
         url = f"{base}/r/AFL/hot.json?limit=15"
         try:
             resp = requests.get(url, headers=REDDIT_HEADERS, timeout=15)
             resp.raise_for_status()
-            threads = []
             for post in resp.json()["data"]["children"]:
                 p = post["data"]
                 if p.get("stickied"):
                     continue
                 threads.append({
-                    "title":    p.get("title", ""),
-                    "comments": p.get("num_comments", 0),
-                    "score":    p.get("score", 0),
-                    "flair":    p.get("link_flair_text", "") or "",
-                    "url":      f"https://www.reddit.com{p.get('permalink', '')}",
+                    "title":       p.get("title", ""),
+                    "comments":    p.get("num_comments", 0),
+                    "score":       p.get("score", 0),
+                    "flair":       p.get("link_flair_text", "") or "",
+                    "url":         f"https://www.reddit.com{p.get('permalink', '')}",
+                    "top_comment": None,
                 })
                 if len(threads) == 5:
                     break
             if threads:
                 print(f"      Reddit: JSON API succeeded ({base})")
-                return threads
+                break
         except Exception as exc:
             print(f"  Reddit JSON warning ({base}): {exc}")
 
-    for rss_base in ("https://www.reddit.com", "https://old.reddit.com"):
-        rss_url = f"{rss_base}/r/AFL/hot.rss"
-        try:
-            feed = feedparser.parse(rss_url, request_headers=REDDIT_HEADERS)
-            if not feed.entries:
-                continue
-            threads = []
-            for entry in feed.entries[:10]:
-                title = getattr(entry, "title", "").strip()
-                url   = getattr(entry, "link",  "").strip()
-                if not title or not url:
+    if not threads:
+        for rss_base in ("https://www.reddit.com", "https://old.reddit.com"):
+            rss_url = f"{rss_base}/r/AFL/hot.rss"
+            try:
+                feed = feedparser.parse(rss_url, request_headers=REDDIT_HEADERS)
+                if not feed.entries:
                     continue
-                title = re.sub(r"^r/AFL:\s*", "", title)
-                threads.append({
-                    "title":    title,
-                    "comments": None,
-                    "score":    None,
-                    "flair":    "",
-                    "url":      url,
-                })
-                if len(threads) == 5:
+                for entry in feed.entries[:10]:
+                    title = re.sub(r"^r/AFL:\s*", "", getattr(entry, "title", "").strip())
+                    url   = getattr(entry, "link", "").strip()
+                    if title and url:
+                        threads.append({
+                            "title": title, "comments": None, "score": None,
+                            "flair": "", "url": url, "top_comment": None,
+                        })
+                    if len(threads) == 5:
+                        break
+                if threads:
+                    print(f"      Reddit: RSS fallback succeeded ({rss_base})")
                     break
-            if threads:
-                print(f"      Reddit: RSS fallback succeeded ({rss_base})")
-                return threads
-        except Exception as exc:
-            print(f"  Reddit RSS warning ({rss_base}): {exc}")
+            except Exception as exc:
+                print(f"  Reddit RSS warning ({rss_base}): {exc}")
 
-    print("  Reddit: all methods failed — section will be empty")
-    return []
+    # Fetch top comment for the #1 thread (most engaging)
+    if threads and threads[0].get("comments"):
+        threads[0]["top_comment"] = _fetch_reddit_top_comment(threads[0]["url"])
+        if threads[0]["top_comment"]:
+            print("      Reddit: top comment fetched for #1 thread")
+
+    if not threads:
+        print("  Reddit: all methods failed")
+    return threads
 
 
-def render_forum_section(reddit: list[dict]) -> str:
-    """Render Reddit hot threads as a list of linked titles."""
-    if not reddit:
-        return "<p style='font-size:14px;color:#555;'>No Reddit threads available this period.</p>"
+def fetch_bigfooty_threads() -> list[dict]:
+    """Scrape hot threads from BigFooty AFL forum."""
+    try:
+        resp = requests.get(BIGFOOTY_URL, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(resp.text, "lxml")
+        threads = []
+        seen: set[str] = set()
+        # XenForo thread links follow /forum/threads/title.ID/ pattern
+        for a in soup.find_all("a", href=re.compile(r"/forum/threads/")):
+            href  = a.get("href", "")
+            title = a.get_text(strip=True)
+            if not title or len(title) < 12:
+                continue
+            # Deduplicate by thread ID (last numeric segment)
+            tid = re.search(r"\.(\d+)/?$", href)
+            key = tid.group(1) if tid else href
+            if key in seen:
+                continue
+            seen.add(key)
+            url = f"https://www.bigfooty.com{href}" if href.startswith("/") else href
+            threads.append({"title": title, "url": url})
+            if len(threads) == 5:
+                break
+        print(f"  BigFooty: {len(threads)} threads")
+        return threads
+    except Exception as exc:
+        print(f"  BigFooty warning: {exc}")
+        return []
 
-    items = []
-    for t in reddit:
-        flair_html = ""
-        if t["flair"]:
-            flair_html = (
-                f' <span style="font-size:11px;color:#ffffff;background:#003087;'
-                f'border-radius:3px;padding:1px 5px;vertical-align:middle;">'
-                f'{t["flair"]}</span>'
-            )
-        items.append(
-            f'<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #eeeeee;">'
-            f'<a href="{t["url"]}" style="font-size:14px;font-weight:bold;color:#003087;'
-            f'text-decoration:none;line-height:1.4;display:block;">'
-            f'{t["title"]}</a>{flair_html}'
-            f'<p style="margin:5px 0 0 0;font-size:12px;color:#888888;">'
-            f'r/AFL'
-            + (f' &nbsp;&middot;&nbsp; {t["comments"]:,} comments'
-               f' &nbsp;&middot;&nbsp; {t["score"]:,} upvotes'
-               if t["comments"] is not None else '')
-            + '</p>'
-            f'</div>'
+
+def render_forum_section(reddit: list[dict], bigfooty: list[dict]) -> str:
+    """Render Reddit and BigFooty threads combined into one Fan Forums section."""
+    parts = []
+
+    if reddit:
+        parts.append(
+            '<p style="margin:0 0 10px 0;font-size:11px;font-weight:bold;color:#ff4500;'
+            'text-transform:uppercase;letter-spacing:0.08em;">r/AFL</p>'
         )
-    return "\n".join(items)
+        for t in reddit:
+            flair_html = ""
+            if t.get("flair"):
+                flair_html = (
+                    f' <span style="font-size:11px;color:#ffffff;background:#003087;'
+                    f'border-radius:3px;padding:1px 5px;vertical-align:middle;">'
+                    f'{t["flair"]}</span>'
+                )
+            meta = "r/AFL"
+            if t.get("comments") is not None:
+                meta += f' &middot; {t["comments"]:,} comments &middot; {t["score"]:,} upvotes'
+
+            top_comment_html = ""
+            if t.get("top_comment"):
+                top_comment_html = (
+                    f'<p style="margin:8px 0 0 0;font-size:13px;color:#555555;line-height:1.5;'
+                    f'border-left:3px solid #ff4500;padding-left:10px;font-style:italic;">'
+                    f'&ldquo;{t["top_comment"]}&rdquo;</p>'
+                )
+
+            parts.append(
+                f'<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #eeeeee;">'
+                f'<a href="{t["url"]}" style="font-size:14px;font-weight:bold;color:#003087;'
+                f'text-decoration:none;line-height:1.4;display:block;">'
+                f'{t["title"]}</a>{flair_html}'
+                f'<p style="margin:5px 0 0 0;font-size:12px;color:#888888;">{meta}</p>'
+                f'{top_comment_html}'
+                f'</div>'
+            )
+
+    if bigfooty:
+        parts.append(
+            '<p style="margin:18px 0 10px 0;font-size:11px;font-weight:bold;color:#1a3c6e;'
+            'text-transform:uppercase;letter-spacing:0.08em;">BigFooty</p>'
+        )
+        for t in bigfooty:
+            parts.append(
+                f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
+                f'<a href="{t["url"]}" style="font-size:14px;font-weight:bold;color:#003087;'
+                f'text-decoration:none;line-height:1.4;display:block;">{t["title"]}</a>'
+                f'<p style="margin:4px 0 0 0;font-size:12px;color:#888888;">BigFooty</p>'
+                f'</div>'
+            )
+
+    if not parts:
+        return "<p style='font-size:14px;color:#555;'>No forum threads available this period.</p>"
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +730,6 @@ def render_forum_section(reddit: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 def _section_row(heading: str, content: str, first: bool = False) -> str:
-    """Render a named section row for the email body table."""
     top_padding = "22px" if first else "20px"
     border      = "" if first else "border-top:1px solid #eeeeee;"
     return f"""
@@ -588,18 +745,25 @@ def _section_row(heading: str, content: str, first: bool = False) -> str:
 
 
 def build_email_html(
-    afl_html:   str,
-    media_html: str,
-    forum_html: str,
-    time_slot:  str,
-    now_aest:   datetime,
+    afl_html:     str,
+    media_html:   str,
+    results_html: str | None,
+    youtube_html: str | None,
+    forum_html:   str,
+    time_slot:    str,
+    now_aest:     datetime,
 ) -> str:
     day_date  = now_aest.strftime("%A %-d %B %Y")
     generated = now_aest.strftime("%-I:%M %p AEST")
 
+    results_section = _section_row("Match Results", results_html) if results_html else ""
+    youtube_section = _section_row("Watch", youtube_html)        if youtube_html else ""
+
     body_sections = (
         _section_row("Top Stories — AFL.com.au", afl_html, first=True)
         + _section_row("Top Stories — Other Media", media_html)
+        + results_section
+        + youtube_section
         + _section_row("Fan Forums", forum_html)
     )
 
@@ -684,7 +848,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v21"
+SCRIPT_VERSION = "v22"
 
 
 def main() -> None:
@@ -696,17 +860,19 @@ def main() -> None:
     print(f"\n=== AFL Digest {SCRIPT_VERSION} — {time_slot} — {day_date} (lookback {hours_lookback}h) ===\n")
 
     # ── Section 1a: AFL.com.au ──
-    print("[1/4] Fetching AFL.com.au feed...")
-    afl_raw    = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
-    # min_recent=3: use only fresh articles when at least 3 exist within the window;
-    # fall back to full pool (scored by recency) only when the feed is quiet.
-    afl_pool   = filter_by_recency(afl_raw, "AFL.com.au", hours=hours_lookback, min_recent=3)
-    afl_pool   = enrich_authors(afl_pool)
+    print("[1/5] Fetching AFL.com.au feed...")
+    afl_raw  = fetch_rss_articles(AFL_OFFICIAL_FEEDS)
+    afl_pool = filter_by_recency(afl_raw, "AFL.com.au", hours=hours_lookback, min_recent=3)
+    afl_pool = enrich_authors(afl_pool)
     print(f"      {len(afl_raw)} fetched → {len(afl_pool)} in pool")
-    afl_html   = select_afl_official(afl_pool)
+    afl_html = select_afl_official(afl_pool)
+
+    # Match results captured from raw feed (articles excluded from news sections)
+    results     = fetch_match_results(afl_raw, hours=hours_lookback + 9)
+    results_html = render_results_section(results)
 
     # ── Section 1b: Other Media ──
-    print("[2/4] Fetching other media feeds...")
+    print("[2/5] Fetching other media feeds...")
     media_raw      = fetch_rss_articles(OTHER_MEDIA_FEEDS)
     media_filtered = filter_articles(media_raw)
     media_recent   = filter_by_recency(media_filtered, "media")
@@ -714,18 +880,21 @@ def main() -> None:
     print(f"      {len(media_raw)} fetched → {len(media_filtered)} filtered → {len(media_recent)} recent")
     media_html = select_media_news(media_recent)
 
-    # ── Section 2: Fan Forums ──
-    print("[3/4] Fetching Reddit threads...")
-    reddit     = fetch_reddit_threads()
-    print(f"      {len(reddit)} threads")
-    forum_html = render_forum_section(reddit)
+    # ── YouTube ──
+    print("[3/5] Fetching AFL YouTube videos...")
+    youtube_html = render_youtube_section(fetch_youtube_videos(hours=hours_lookback + 9))
+
+    # ── Fan Forums: Reddit + BigFooty ──
+    print("[4/5] Fetching forum threads...")
+    reddit   = fetch_reddit_threads()
+    bigfooty = fetch_bigfooty_threads()
+    print(f"      Reddit: {len(reddit)} threads | BigFooty: {len(bigfooty)} threads")
+    forum_html = render_forum_section(reddit, bigfooty)
 
     # ── Email ──
-    print("[4/4] Sending email...")
-    date_str = now_aest.strftime("%-d %B")
-
-    # Use the top-scored headline as subject hook to drive opens
-    now_utc = datetime.now(timezone.utc)
+    print("[5/5] Sending email...")
+    date_str  = now_aest.strftime("%-d %B")
+    now_utc   = datetime.now(timezone.utc)
     all_articles = afl_pool + media_recent
     top = max(all_articles, key=lambda a: _score_article(a, now_utc), default=None)
     if top:
@@ -736,7 +905,9 @@ def main() -> None:
     else:
         subject = f"{time_slot} - {now_aest.strftime('%A')} {date_str}"
 
-    html = build_email_html(afl_html, media_html, forum_html, time_slot, now_aest)
+    html = build_email_html(
+        afl_html, media_html, results_html, youtube_html, forum_html, time_slot, now_aest
+    )
     print(f"      Subject: {subject}")
     send_email(html, subject)
     print("\nDone.\n")
