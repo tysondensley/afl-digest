@@ -1,20 +1,8 @@
 name: AFL Digest
 
 on:
-  schedule:
-    # All times are UTC. Australia runs AEST (UTC+10) Apr–Oct, AEDT (UTC+11) Oct–Apr.
-    # Schedules below use AEST (UTC+10). During AEDT the digest arrives 1 hour late —
-    # acceptable without managing two overlapping cron sets.
-    #
-    #  6:15 am AEST (20:15 UTC prev day)  → Morning
-    - cron: '15 20 * * *'
-    # 12:00 pm AEST (02:00 UTC)           → Midday
-    - cron: '0 2 * * *'
-    #  4:30 pm AEST (06:30 UTC)           → Afternoon
-    - cron: '30 6 * * *'
-    #  9:00 pm AEST (11:00 UTC)           → Evening
-    - cron: '0 11 * * *'
-
+  # Triggered externally by cron-job.org via workflow_dispatch API calls.
+  # The built-in GitHub Actions schedule has been removed to avoid duplicate sends.
   workflow_dispatch:
     inputs:
       time_slot:
