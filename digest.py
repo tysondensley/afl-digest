@@ -251,6 +251,41 @@ def filter_by_recency(
 # Author / thumbnail enrichment
 # ---------------------------------------------------------------------------
 
+def _clean_author(raw: str) -> str:
+    """Strip 'By / by' prefix and trim whitespace from any author string."""
+    return re.sub(r"(?i)^by[\s:]+", "", raw.strip()).strip()
+
+
+def _resolve_google_news_url(url: str) -> str:
+    """
+    Attempt to follow a Google News redirect URL to the real article page.
+    Google News uses JS redirects so requests only gets as far as the Google
+    landing page, but that page sometimes has a canonical tag or a <c-wiz>
+    data attribute pointing to the real URL.
+    Returns the resolved URL, or the original if resolution fails.
+    """
+    if "news.google.com" not in url:
+        return url
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=8, allow_redirects=True)
+        if "news.google.com" not in resp.url:
+            return resp.url
+        soup = BeautifulSoup(resp.text, "lxml")
+        # Canonical tag
+        canon = soup.find("link", rel="canonical")
+        if canon and "news.google.com" not in (canon.get("href") or ""):
+            return canon["href"]
+        # Meta refresh
+        refresh = soup.find("meta", attrs={"http-equiv": re.compile(r"refresh", re.I)})
+        if refresh:
+            m = re.search(r"url=(.+)", refresh.get("content", ""), re.I)
+            if m and "news.google.com" not in m.group(1):
+                return m.group(1).strip()
+    except Exception:
+        pass
+    return url
+
+
 def _scrape_afl_author(url: str) -> str:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=6)
@@ -267,15 +302,81 @@ def _scrape_afl_author(url: str) -> str:
             if el:
                 val = el.get("content") or el.get_text(strip=True)
                 if val and 2 < len(val) < 80:
-                    return val.strip()
+                    return _clean_author(val)
+    except Exception:
+        pass
+    return ""
+
+
+def _scrape_media_author(url: str) -> str:
+    """Scrape author from an article page using a broad set of selectors."""
+    resolved = _resolve_google_news_url(url)
+    if "news.google.com" in resolved:
+        return ""
+    try:
+        resp = requests.get(resolved, headers=HEADERS, timeout=8, allow_redirects=True)
+        soup = BeautifulSoup(resp.text, "lxml")
+        # Priority 1: meta tags
+        for attr in (
+            {"name": "author"},
+            {"property": "article:author"},
+            {"name": "byl"},
+        ):
+            tag = soup.find("meta", attrs=attr)
+            if tag:
+                val = tag.get("content", "").strip()
+                if val and 2 < len(val) < 80:
+                    return _clean_author(val)
+        # Priority 2: schema.org itemprop
+        for sel in ("[itemprop='author'] [itemprop='name']", "[itemprop='author']"):
+            el = soup.select_one(sel)
+            if el:
+                val = el.get_text(strip=True)
+                if val and 2 < len(val) < 80:
+                    return _clean_author(val)
+        # Priority 3: semantic class names (narrower first to avoid noise)
+        for sel in (
+            "[class*='author-name']",
+            "[class*='author__name']",
+            "[class*='ArticleAuthor']",
+            "[class*='author']",
+            "[class*='byline']",
+            "[rel='author']",
+        ):
+            el = soup.select_one(sel)
+            if el:
+                val = el.get_text(strip=True)
+                # Reject if too long (likely a "By John Smith and Jane Doe | Title" sentence)
+                if val and 2 < len(val) < 60:
+                    return _clean_author(val)
+        # Priority 4: JSON-LD
+        for tag in soup.find_all("script", type="application/ld+json"):
+            try:
+                import json
+                data = json.loads(tag.string or "")
+                if isinstance(data, list):
+                    data = data[0]
+                author = data.get("author", {})
+                if isinstance(author, list):
+                    author = author[0]
+                name = (author or {}).get("name", "")
+                if name and 2 < len(name) < 80:
+                    return _clean_author(name)
+            except Exception:
+                pass
     except Exception:
         pass
     return ""
 
 
 def _scrape_og_image(url: str) -> str:
+    """Scrape OG/Twitter image from url, attempting to resolve Google News redirects."""
+    resolved = _resolve_google_news_url(url)
+    target = resolved if "news.google.com" not in resolved else url
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=6, allow_redirects=True)
+        resp = requests.get(target, headers=HEADERS, timeout=8, allow_redirects=True)
+        if "news.google.com" in resp.url:
+            return ""
         soup = BeautifulSoup(resp.text, "lxml")
         for attr in (
             {"property": "og:image"},
@@ -298,9 +399,7 @@ def _scrape_og_image(url: str) -> str:
 def enrich_thumbnails(articles: list[dict]) -> list[dict]:
     targets = [
         a for a in articles
-        if not a.get("thumbnail")
-        and a.get("link")
-        and "news.google.com" not in a["link"]
+        if not a.get("thumbnail") and a.get("link")
     ]
     if not targets:
         return articles
@@ -310,7 +409,7 @@ def enrich_thumbnails(articles: list[dict]) -> list[dict]:
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(_scrape_og_image, a["link"]): a["link"]
                    for a in targets[:15]}
-        for fut in as_completed(futures, timeout=20):
+        for fut in as_completed(futures, timeout=25):
             url = futures[fut]
             try:
                 thumb = fut.result()
@@ -329,6 +428,7 @@ def enrich_thumbnails(articles: list[dict]) -> list[dict]:
 
 
 def enrich_authors(articles: list[dict]) -> list[dict]:
+    """Scrape authors for AFL.com.au articles missing an author."""
     targets = [
         a for a in articles
         if a["source"] == "AFL.com.au" and not a["author"] and a["link"]
@@ -353,6 +453,38 @@ def enrich_authors(articles: list[dict]) -> list[dict]:
     for a in articles:
         if a["link"] in url_to_author:
             a["author"] = url_to_author[a["link"]]
+    return articles
+
+
+def enrich_media_authors(articles: list[dict]) -> list[dict]:
+    """Scrape authors for Other Media articles missing an author."""
+    targets = [
+        a for a in articles
+        if a["source"] != "AFL.com.au" and not a["author"] and a.get("link")
+    ]
+    if not targets:
+        return articles
+
+    print(f"      Enriching media authors for {len(targets)} articles...")
+    url_to_author: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_scrape_media_author, a["link"]): a["link"]
+                   for a in targets[:12]}
+        for fut in as_completed(futures, timeout=25):
+            url = futures[fut]
+            try:
+                author = fut.result()
+                if author:
+                    url_to_author[url] = author
+            except Exception:
+                pass
+
+    found = 0
+    for a in articles:
+        if a["link"] in url_to_author:
+            a["author"] = url_to_author[a["link"]]
+            found += 1
+    print(f"      Found {found} media authors")
     return articles
 
 
@@ -878,7 +1010,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v23"
+SCRIPT_VERSION = "v24"
 
 
 def main() -> None:
@@ -907,6 +1039,7 @@ def main() -> None:
     media_filtered = filter_articles(media_raw)
     media_recent   = filter_by_recency(media_filtered, "media")
     media_recent   = enrich_thumbnails(media_recent)
+    media_recent   = enrich_media_authors(media_recent)
     print(f"      {len(media_raw)} fetched → {len(media_filtered)} filtered → {len(media_recent)} recent")
     media_html = select_media_news(media_recent)
 
