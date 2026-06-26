@@ -77,6 +77,24 @@ _INCLUDE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# At least one of these must appear for an article to pass the AFL relevance gate.
+# Catches non-AFL articles that slip through Google News RSS searches.
+_AFL_RE = re.compile(
+    r"\b("
+    r"AFL|AFLW|VFL|VFLW|footy|football|"
+    r"Carlton|Collingwood|Richmond|Hawthorn|Essendon|Geelong|"
+    r"Melbourne|North Melbourne|Port Adelaide|Adelaide|Brisbane|"
+    r"GWS|Giants|Sydney Swans|West Coast|Fremantle|Gold Coast|"
+    r"Western Bulldogs|St Kilda|"
+    r"Hawks|Blues|Tigers|Magpies|Bombers|Cats|Demons|"
+    r"Kangaroos|Roos|Power|Crows|Lions|Swans|Eagles|Dockers|"
+    r"Suns|Bulldogs|Saints|"
+    r"grand final|premiership|trade period|draft night|"
+    r"tribunal|salary cap|supercoach|fantasy footy"
+    r")\b",
+    re.IGNORECASE,
+)
+
 RECIPIENT = "Tyson.Densley@afl.com.au"
 
 SLOT_LOOKBACK_HOURS = {"Morning": 9, "Midday": 6, "Afternoon": 5, "Evening": 5}
@@ -180,10 +198,13 @@ def fetch_rss_articles(feeds: list[tuple]) -> list[dict]:
 
 
 def filter_articles(articles: list[dict]) -> list[dict]:
-    """Drop obvious match-result content; prefer genuine-news articles."""
+    """Drop non-AFL and match-result content; prefer genuine-news articles."""
     kept, deprioritised = [], []
     for a in articles:
         text = f"{a['title']} {a['snippet']}"
+        # Hard gate: must mention AFL, a club, or football to qualify
+        if not _AFL_RE.search(text):
+            continue
         if _EXCLUDE_RE.search(text):
             continue
         if _INCLUDE_RE.search(text):
@@ -399,6 +420,12 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
 # Article selection — keyword + recency heuristic
 # ---------------------------------------------------------------------------
 
+_PROMO_RE = re.compile(
+    r"^(LISTEN|WATCH|STREAM|SUBSCRIBE|DOWNLOAD|WIN|ENTER|VOTE|POLL|QUIZ)[\s:–—]",
+    re.IGNORECASE,
+)
+
+
 def _score_article(article: dict, now: datetime) -> float:
     text  = f"{article['title']} {article['snippet']}"
     score = 0.0
@@ -406,6 +433,9 @@ def _score_article(article: dict, now: datetime) -> float:
         score += 5.0
     if _EXCLUDE_RE.search(text):
         score -= 8.0
+    # Promotional / service content (Stream your team, Listen:, Watch:, etc.)
+    if _PROMO_RE.search(article["title"]):
+        score -= 6.0
     if article.get("published"):
         age_hours = (now - article["published"]).total_seconds() / 3600
         score += max(0.0, 8.0 - age_hours * 0.4)
@@ -848,7 +878,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v22"
+SCRIPT_VERSION = "v23"
 
 
 def main() -> None:
