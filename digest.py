@@ -513,6 +513,17 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
     title  = article["title"]
     age    = _age_str(article.get("published"))
 
+    raw_snippet = article.get("snippet", "").strip()
+    # Truncate at sentence boundary where possible, otherwise hard-cut
+    if len(raw_snippet) > 160:
+        cut = raw_snippet[:160]
+        last_stop = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        raw_snippet = (cut[: last_stop + 1] if last_stop > 80 else cut.rstrip() + "…")
+    snippet_html = (
+        f'<p style="margin:5px 0 4px 0;font-size:13px;color:#444444;line-height:1.5;">'
+        f'{raw_snippet}</p>'
+    ) if raw_snippet else ""
+
     byline = f'<span style="font-weight:600;">{source}</span>'
     if author:
         byline += f' &middot; <span style="font-style:italic;">{author}</span>'
@@ -528,6 +539,7 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
         f'<p style="margin:5px 0 0 0;font-size:13px;color:#888888;line-height:1.4;">'
         f'{byline}</p>'
     )
+    body = f'{link}{snippet_html}{meta}'
 
     if thumb:
         return (
@@ -539,13 +551,13 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
             f'<img src="{thumb}" width="76" height="76" alt=""'
             f' style="border-radius:6px;display:block;width:76px;height:76px;object-fit:cover;border:0;">'
             f'</a></td>'
-            f'<td valign="top">{link}{meta}</td>'
+            f'<td valign="top">{body}</td>'
             f'</tr></table>'
         )
     else:
         return (
             f'<div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
-            f'{link}{meta}</div>'
+            f'{body}</div>'
         )
 
 
@@ -1011,7 +1023,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v25"
+SCRIPT_VERSION = "v26"
 
 
 def main() -> None:
