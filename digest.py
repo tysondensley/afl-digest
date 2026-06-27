@@ -253,7 +253,8 @@ def filter_by_recency(
 
 def _clean_author(raw: str) -> str:
     """Strip 'By / by' prefix and trim whitespace from any author string."""
-    return re.sub(r"(?i)^by[\s:]+", "", raw.strip()).strip()
+    # [\s:]* (zero-or-more) handles both 'By Name' and 'ByName' (two child spans)
+    return re.sub(r"(?i)^by[\s:]*", "", raw.strip()).strip()
 
 
 def _resolve_google_news_url(url: str) -> str:
@@ -300,7 +301,7 @@ def _scrape_afl_author(url: str) -> str:
         ):
             el = soup.select_one(sel)
             if el:
-                val = el.get("content") or el.get_text(strip=True)
+                val = el.get("content") or el.get_text(separator=" ", strip=True)
                 if val and 2 < len(val) < 80:
                     return _clean_author(val)
     except Exception:
@@ -1010,7 +1011,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v24"
+SCRIPT_VERSION = "v25"
 
 
 def main() -> None:
