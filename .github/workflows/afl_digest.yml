@@ -60,3 +60,16 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TIME_SLOT:          ${{ env.TIME_SLOT }}
         run: python digest.py
+
+      - name: Publish to GitHub Pages
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Fetch or create the gh-pages branch
+          git fetch origin gh-pages 2>/dev/null || true
+          git checkout gh-pages 2>/dev/null || git checkout --orphan gh-pages
+          # Bring in only index.html from the working tree
+          git checkout "$GITHUB_SHA" -- index.html
+          git add index.html
+          git diff --cached --quiet || git commit -m "digest: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push origin gh-pages

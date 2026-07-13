@@ -532,8 +532,8 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
 
     title_weight = "bold" if bold_title else "normal"
     link = (
-        f'<a href="{url}" style="font-size:14px;font-weight:{title_weight};color:#003087;'
-        f'text-decoration:none;line-height:1.45;display:block;">{title}</a>'
+        f'<a href="{url}" style="font-size:15px;font-weight:{title_weight};color:#1a56db;'
+        f'text-decoration:none;line-height:1.4;display:block;">{title}</a>'
     )
     meta = (
         f'<p style="margin:5px 0 0 0;font-size:13px;color:#888888;line-height:1.4;">'
@@ -904,19 +904,40 @@ def render_forum_section(reddit: list[dict], bigfooty: list[dict]) -> str:
 # Email assembly
 # ---------------------------------------------------------------------------
 
-def _section_row(heading: str, content: str, first: bool = False) -> str:
-    top_padding = "22px" if first else "20px"
-    border      = "" if first else "border-top:1px solid #eeeeee;"
+# Per-section visual identity: (accent colour, content-area bg tint, heading label)
+_SECTION_STYLE = {
+    "Top Stories — AFL.com.au":  ("#003087", "#f0f5ff", "AFL.COM.AU"),
+    "Top Stories — Other Media": ("#b71c1c", "#fff7f7", "OTHER MEDIA"),
+    "Match Results":             ("#e65100", "#fff9f3", "MATCH RESULTS"),
+    "Watch":                     ("#c62828", "#fff5f5", "WATCH"),
+    "Fan Forums":                ("#4a148c", "#faf2ff", "FAN FORUMS"),
+}
+
+
+def _section_block(heading: str, content: str) -> str:
+    accent, bg, label = _SECTION_STYLE.get(heading, ("#003087", "#f8f8f8", heading.upper()))
     return f"""
-              <tr>
-                <td style="padding:{top_padding} 0 8px 0;{border}">
-                  <h2 style="margin:0 0 14px 0;font-size:16px;font-weight:bold;
-                             color:#003087;text-transform:uppercase;letter-spacing:0.05em;">
-                    {heading}
-                  </h2>
-                  {content}
-                </td>
-              </tr>"""
+          <!-- ── {heading} ── -->
+          <tr>
+            <td class="sec-head"
+                style="padding:14px 28px 10px 28px;background-color:{bg};
+                       border-top:3px solid {accent};">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <td style="border-left:4px solid {accent};padding-left:10px;">
+                    <span style="font-size:11px;font-weight:bold;color:{accent};
+                                 text-transform:uppercase;letter-spacing:0.09em;">{label}</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td class="sec-body"
+                style="padding:16px 28px 12px 28px;background-color:{bg};">
+              {content}
+            </td>
+          </tr>"""
 
 
 def build_email_html(
@@ -931,15 +952,12 @@ def build_email_html(
     day_date  = now_aest.strftime("%A %-d %B %Y")
     generated = now_aest.strftime("%-I:%M %p AEST")
 
-    results_section = _section_row("Match Results", results_html) if results_html else ""
-    youtube_section = _section_row("Watch", youtube_html)        if youtube_html else ""
-
-    body_sections = (
-        _section_row("Top Stories — AFL.com.au", afl_html, first=True)
-        + _section_row("Top Stories — Other Media", media_html)
-        + results_section
-        + youtube_section
-        + _section_row("Fan Forums", forum_html)
+    sections = (
+        _section_block("Top Stories — AFL.com.au", afl_html)
+        + _section_block("Top Stories — Other Media", media_html)
+        + (_section_block("Match Results", results_html) if results_html else "")
+        + (_section_block("Watch", youtube_html)         if youtube_html else "")
+        + _section_block("Fan Forums", forum_html)
     )
 
     return f"""<!DOCTYPE html>
@@ -948,43 +966,48 @@ def build_email_html(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AFL Digest &mdash; {time_slot}</title>
+  <style>
+    @media only screen and (max-width: 480px) {{
+      .outer-pad  {{ padding: 12px 0 !important; }}
+      .sec-head   {{ padding-left: 16px !important; padding-right: 16px !important; }}
+      .sec-body   {{ padding-left: 16px !important; padding-right: 16px !important; }}
+      .hdr-cell   {{ padding-left: 16px !important; padding-right: 16px !important; }}
+      .ftr-cell   {{ padding-left: 16px !important; padding-right: 16px !important; }}
+    }}
+  </style>
 </head>
-<body style="margin:0;padding:0;background-color:#f0f2f5;font-family:Arial,Helvetica,sans-serif;">
+<body style="margin:0;padding:0;background-color:#edf0f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
-         style="background-color:#f0f2f5;">
+         style="background-color:#edf0f4;">
     <tr>
-      <td align="center" style="padding:24px 12px;">
+      <td class="outer-pad" align="center" style="padding:28px 16px;">
 
         <table role="presentation" cellspacing="0" cellpadding="0" border="0"
                width="100%" style="max-width:600px;background-color:#ffffff;
-               border-radius:10px;overflow:hidden;
-               box-shadow:0 2px 12px rgba(0,0,0,0.10);">
+               border-radius:12px;overflow:hidden;
+               box-shadow:0 4px 20px rgba(0,0,0,0.12);">
 
           <!-- ── Header ── -->
           <tr>
-            <td style="background-color:#003087;padding:18px 28px 16px 28px;">
-              <p style="margin:0;font-size:11px;font-weight:bold;color:#7faad4;
-                         text-transform:uppercase;letter-spacing:0.1em;">AFL News Digest</p>
-              <h1 style="margin:5px 0 0 0;font-size:22px;font-weight:bold;color:#ffffff;line-height:1.3;">
-                {time_slot} &nbsp;&middot;&nbsp; {day_date}
+            <td class="hdr-cell"
+                style="background-color:#003087;padding:22px 28px 20px 28px;">
+              <p style="margin:0;font-size:10px;font-weight:bold;color:#8ab4dc;
+                         text-transform:uppercase;letter-spacing:0.14em;">AFL News Digest</p>
+              <h1 style="margin:6px 0 0 0;font-size:26px;font-weight:800;color:#ffffff;
+                         line-height:1.2;letter-spacing:-0.01em;">
+                {time_slot} <span style="opacity:0.55;">&middot;</span> {day_date}
               </h1>
             </td>
           </tr>
 
-          <!-- ── Body ── -->
-          <tr>
-            <td style="padding:0 28px;">
-              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-                {body_sections}
-              </table>
-            </td>
-          </tr>
+          {sections}
 
           <!-- ── Footer ── -->
           <tr>
-            <td style="background-color:#f8f9fb;padding:14px 28px;
-                       border-top:1px solid #e8eaed;">
-              <p style="margin:0;font-size:11px;color:#999999;">
+            <td class="ftr-cell"
+                style="background-color:#f4f6f9;padding:14px 28px;
+                       border-top:1px solid #e2e6ea;">
+              <p style="margin:0;font-size:11px;color:#aaaaaa;letter-spacing:0.01em;">
                 Automated AFL Digest &middot; Generated {generated} &middot; {SCRIPT_VERSION}
               </p>
             </td>
@@ -1023,7 +1046,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v26"
+SCRIPT_VERSION = "v27"
 
 
 def main() -> None:
@@ -1086,6 +1109,11 @@ def main() -> None:
     )
     print(f"      Subject: {subject}")
     send_email(html, subject)
+
+    # Save latest digest as index.html for GitHub Pages
+    with open("index.html", "w", encoding="utf-8") as f:
+        f.write(html)
+    print("      Saved index.html")
     print("\nDone.\n")
 
 
