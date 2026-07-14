@@ -5,6 +5,7 @@ news-value keywords, then emails a curated summary.
 No AI API required — fully free to run.
 """
 
+import json
 import os
 import re
 import smtplib
@@ -353,7 +354,6 @@ def _scrape_media_author(url: str) -> str:
         # Priority 4: JSON-LD
         for tag in soup.find_all("script", type="application/ld+json"):
             try:
-                import json
                 data = json.loads(tag.string or "")
                 if isinstance(data, list):
                     data = data[0]
@@ -1046,7 +1046,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v27"
+SCRIPT_VERSION = "v28"
 
 
 def main() -> None:
