@@ -68,6 +68,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           cp index.html /tmp/digest-index.html
+          rm index.html
           # Check out the existing remote gh-pages branch, or create an orphan if first run
           if git fetch origin gh-pages 2>/dev/null; then
             git checkout -B gh-pages origin/gh-pages
