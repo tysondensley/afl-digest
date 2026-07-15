@@ -67,12 +67,14 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Stash the generated index.html before switching branches
           cp index.html /tmp/digest-index.html
-          # Fetch or create the gh-pages branch
-          git fetch origin gh-pages 2>/dev/null || true
-          git checkout gh-pages 2>/dev/null || git checkout --orphan gh-pages
-          # Copy the generated file in (it's not in git history, just a runtime output)
+          # Check out the existing remote gh-pages branch, or create an orphan if first run
+          if git fetch origin gh-pages 2>/dev/null; then
+            git checkout -B gh-pages origin/gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . --quiet 2>/dev/null || true
+          fi
           cp /tmp/digest-index.html index.html
           git add index.html
           git diff --cached --quiet || git commit -m "digest: $(date -u '+%Y-%m-%d %H:%M UTC')"
