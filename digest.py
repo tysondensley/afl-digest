@@ -520,7 +520,7 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
         last_stop = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
         raw_snippet = (cut[: last_stop + 1] if last_stop > 80 else cut.rstrip() + "…")
     snippet_html = (
-        f'<p style="margin:5px 0 4px 0;font-size:13px;color:#444444;line-height:1.5;">'
+        f'<p class="card-snippet" style="margin:5px 0 4px 0;font-size:13px;color:#444444;line-height:1.5;">'
         f'{raw_snippet}</p>'
     ) if raw_snippet else ""
 
@@ -532,11 +532,11 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
 
     title_weight = "bold" if bold_title else "normal"
     link = (
-        f'<a href="{url}" style="font-size:15px;font-weight:{title_weight};color:#1a56db;'
+        f'<a href="{url}" class="card-title" style="font-size:15px;font-weight:{title_weight};color:#1a56db;'
         f'text-decoration:none;line-height:1.4;display:block;">{title}</a>'
     )
     meta = (
-        f'<p style="margin:5px 0 0 0;font-size:13px;color:#888888;line-height:1.4;">'
+        f'<p class="card-meta" style="margin:5px 0 0 0;font-size:13px;color:#888888;line-height:1.4;">'
         f'{byline}</p>'
     )
     body = f'{link}{snippet_html}{meta}'
@@ -544,19 +544,19 @@ def render_news_card(article: dict, bold_title: bool = True) -> str:
     if thumb:
         return (
             f'<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"'
-            f' style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
+            f' class="card divider" style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
             f'<tr>'
             f'<td width="76" valign="top" style="padding-right:14px;">'
             f'<a href="{url}" style="display:block;">'
             f'<img src="{thumb}" width="76" height="76" alt=""'
-            f' style="border-radius:6px;display:block;width:76px;height:76px;object-fit:cover;border:0;">'
+            f' style="border-radius:6px;display:block;width:76px;height:76px;object-fit:cover;border:0;background-color:#ffffff;">'
             f'</a></td>'
             f'<td valign="top">{body}</td>'
             f'</tr></table>'
         )
     else:
         return (
-            f'<div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
+            f'<div class="card divider" style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #eeeeee;">'
             f'{body}</div>'
         )
 
@@ -589,7 +589,7 @@ def _score_article(article: dict, now: datetime) -> float:
 
 def select_afl_official(articles: list[dict]) -> str:
     if not articles:
-        return "<p>No AFL.com.au news found this period.</p>"
+        return '<p class="card-snippet" style="font-size:14px;color:#555555;">No AFL.com.au news found this period.</p>'
     now    = datetime.now(timezone.utc)
     scored = sorted(articles, key=lambda a: _score_article(a, now), reverse=True)
     top    = scored[:5]
@@ -599,7 +599,7 @@ def select_afl_official(articles: list[dict]) -> str:
 
 def select_media_news(articles: list[dict]) -> str:
     if not articles:
-        return "<p>No media news found this period.</p>"
+        return '<p class="card-snippet" style="font-size:14px;color:#555555;">No media news found this period.</p>'
     now    = datetime.now(timezone.utc)
     scored = sorted(articles, key=lambda a: _score_article(a, now), reverse=True)
     source_counts: dict[str, int] = {}
@@ -652,10 +652,10 @@ def render_results_section(results: list[dict]) -> str | None:
         age = _age_str(r.get("published"))
         age_html = f' &middot; <span style="color:#aaaaaa;">{age}</span>' if age else ""
         items.append(
-            f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
-            f'<a href="{r["link"]}" style="font-size:14px;color:#003087;text-decoration:none;'
+            f'<div class="divider" style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
+            f'<a href="{r["link"]}" class="card-title" style="font-size:14px;color:#003087;text-decoration:none;'
             f'line-height:1.4;display:block;">{r["title"]}</a>'
-            f'<p style="margin:4px 0 0 0;font-size:12px;color:#888888;">'
+            f'<p class="card-meta" style="margin:4px 0 0 0;font-size:12px;color:#888888;">'
             f'<span style="font-weight:600;">{r["source"]}</span>{age_html}</p>'
             f'</div>'
         )
@@ -707,11 +707,11 @@ def render_youtube_section(videos: list[dict]) -> str | None:
         age     = _age_str(v.get("published"))
         age_html = f' &middot; <span style="color:#aaaaaa;">{age}</span>' if age else ""
         items.append(
-            f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
-            f'<a href="{v["url"]}" style="font-size:14px;color:#cc0000;font-weight:bold;'
+            f'<div class="divider" style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
+            f'<a href="{v["url"]}" class="yt-link" style="font-size:14px;color:#cc0000;font-weight:bold;'
             f'text-decoration:none;line-height:1.4;display:block;">'
             f'&#9654; {v["title"]}</a>'
-            f'<p style="margin:4px 0 0 0;font-size:12px;color:#888888;">'
+            f'<p class="card-meta" style="margin:4px 0 0 0;font-size:12px;color:#888888;">'
             f'AFL YouTube{age_html}</p>'
             f'</div>'
         )
@@ -865,37 +865,37 @@ def render_forum_section(reddit: list[dict], bigfooty: list[dict]) -> str:
             top_comment_html = ""
             if t.get("top_comment"):
                 top_comment_html = (
-                    f'<p style="margin:8px 0 0 0;font-size:13px;color:#555555;line-height:1.5;'
+                    f'<p class="card-snippet" style="margin:8px 0 0 0;font-size:13px;color:#555555;line-height:1.5;'
                     f'border-left:3px solid #ff4500;padding-left:10px;font-style:italic;">'
                     f'&ldquo;{t["top_comment"]}&rdquo;</p>'
                 )
 
             parts.append(
-                f'<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #eeeeee;">'
-                f'<a href="{t["url"]}" style="font-size:14px;font-weight:bold;color:#003087;'
+                f'<div class="divider" style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #eeeeee;">'
+                f'<a href="{t["url"]}" class="card-title" style="font-size:14px;font-weight:bold;color:#003087;'
                 f'text-decoration:none;line-height:1.4;display:block;">'
                 f'{t["title"]}</a>{flair_html}'
-                f'<p style="margin:5px 0 0 0;font-size:12px;color:#888888;">{meta}</p>'
+                f'<p class="card-meta" style="margin:5px 0 0 0;font-size:12px;color:#888888;">{meta}</p>'
                 f'{top_comment_html}'
                 f'</div>'
             )
 
     if bigfooty:
         parts.append(
-            '<p style="margin:18px 0 10px 0;font-size:11px;font-weight:bold;color:#1a3c6e;'
+            '<p class="forum-subhead" style="margin:18px 0 10px 0;font-size:11px;font-weight:bold;color:#1a3c6e;'
             'text-transform:uppercase;letter-spacing:0.08em;">BigFooty</p>'
         )
         for t in bigfooty:
             parts.append(
-                f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
-                f'<a href="{t["url"]}" style="font-size:14px;font-weight:bold;color:#003087;'
+                f'<div class="divider" style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #eeeeee;">'
+                f'<a href="{t["url"]}" class="card-title" style="font-size:14px;font-weight:bold;color:#003087;'
                 f'text-decoration:none;line-height:1.4;display:block;">{t["title"]}</a>'
-                f'<p style="margin:4px 0 0 0;font-size:12px;color:#888888;">BigFooty</p>'
+                f'<p class="card-meta" style="margin:4px 0 0 0;font-size:12px;color:#888888;">BigFooty</p>'
                 f'</div>'
             )
 
     if not parts:
-        return "<p style='font-size:14px;color:#555;'>No forum threads available this period.</p>"
+        return "<p class='card-snippet' style='font-size:14px;color:#555;'>No forum threads available this period.</p>"
 
     return "\n".join(parts)
 
@@ -913,9 +913,19 @@ _SECTION_STYLE = {
     "Fan Forums":                ("#4a148c", "#faf2ff", "FAN FORUMS"),
 }
 
+# Per-section slug — drives the dark-mode accent overrides in the <head> <style>.
+_SECTION_SLUG = {
+    "Top Stories — AFL.com.au":  "afl",
+    "Top Stories — Other Media": "media",
+    "Match Results":             "results",
+    "Watch":                     "watch",
+    "Fan Forums":                "forum",
+}
+
 
 def _section_block(heading: str, content: str) -> str:
     accent, bg, label = _SECTION_STYLE.get(heading, ("#003087", "#f8f8f8", heading.upper()))
+    slug = _SECTION_SLUG.get(heading, "afl")
     return f"""
           <!-- ── {heading} ── -->
           <tr>
@@ -924,8 +934,8 @@ def _section_block(heading: str, content: str) -> str:
                        border-top:3px solid {accent};">
               <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                 <tr>
-                  <td style="border-left:4px solid {accent};padding-left:10px;">
-                    <span style="font-size:11px;font-weight:bold;color:{accent};
+                  <td class="sec-label--{slug}" style="border-left:4px solid {accent};padding-left:10px;">
+                    <span class="sec-label sec-label--{slug}" style="font-size:11px;font-weight:bold;color:{accent};
                                  text-transform:uppercase;letter-spacing:0.09em;">{label}</span>
                   </td>
                 </tr>
@@ -965,8 +975,15 @@ def build_email_html(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
   <title>AFL Digest &mdash; {time_slot}</title>
   <style>
+    :root {{
+      color-scheme: light dark;
+      supported-color-schemes: light dark;
+    }}
+
     @media only screen and (max-width: 480px) {{
       .outer-pad  {{ padding: 12px 0 !important; }}
       .sec-head   {{ padding-left: 16px !important; padding-right: 16px !important; }}
@@ -974,16 +991,52 @@ def build_email_html(
       .hdr-cell   {{ padding-left: 16px !important; padding-right: 16px !important; }}
       .ftr-cell   {{ padding-left: 16px !important; padding-right: 16px !important; }}
     }}
+
+    /* ── Dark mode: Apple Mail, iOS Mail, Outlook (new/mobile), some others ── */
+    @media (prefers-color-scheme: dark) {{
+      body, .dm-bg          {{ background-color: #17181a !important; }}
+      .dm-card              {{ background-color: #242527 !important;
+                               box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important; }}
+      .sec-head, .sec-body  {{ background-color: #242527 !important;
+                               border-top-color: #3a3a3c !important; }}
+      .dm-footer            {{ background-color: #1f2022 !important;
+                               border-top-color: #3a3a3c !important; }}
+      .divider              {{ border-bottom-color: #3a3a3c !important; }}
+      .card-title           {{ color: #a9b8ff !important; }}
+      .card-snippet         {{ color: #f4f4f6 !important; }}
+      .card-meta, .card-meta span {{ color: #cfcfd4 !important; }}
+      .yt-link              {{ color: #ff8080 !important; }}
+      .forum-subhead        {{ color: #e6e6e6 !important; }}
+      .sec-label--afl       {{ color: #6f9eff !important; border-left-color: #6f9eff !important; }}
+      .sec-label--media     {{ color: #ff7a7a !important; border-left-color: #ff7a7a !important; }}
+      .sec-label--results   {{ color: #ff9e4d !important; border-left-color: #ff9e4d !important; }}
+      .sec-label--watch     {{ color: #ff7a7a !important; border-left-color: #ff7a7a !important; }}
+      .sec-label--forum     {{ color: #c98bff !important; border-left-color: #c98bff !important; }}
+    }}
+
+    /* ── Dark mode: Outlook.com / older Outlook mobile (attribute-injection) ── */
+    [data-ogsb] body, [data-ogsb] .dm-bg {{ background-color: #17181a !important; }}
+    [data-ogsc] .dm-card                 {{ background-color: #242527 !important; }}
+    [data-ogsc] .sec-head,
+    [data-ogsc] .sec-body                {{ background-color: #242527 !important; }}
+    [data-ogsc] .dm-footer               {{ background-color: #1f2022 !important; }}
+    [data-ogsc] .card-title              {{ color: #a9b8ff !important; }}
+    [data-ogsc] .card-snippet            {{ color: #f4f4f6 !important; }}
+    [data-ogsc] .card-meta,
+    [data-ogsc] .card-meta span          {{ color: #cfcfd4 !important; }}
+    [data-ogsc] .yt-link                 {{ color: #ff8080 !important; }}
+    [data-ogsc] .forum-subhead           {{ color: #e6e6e6 !important; }}
+    [data-ogsc] .divider                 {{ border-bottom-color: #3a3a3c !important; }}
   </style>
 </head>
-<body style="margin:0;padding:0;background-color:#edf0f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+<body class="dm-bg" style="margin:0;padding:0;background-color:#edf0f4;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
-         style="background-color:#edf0f4;">
+         class="dm-bg" style="background-color:#edf0f4;">
     <tr>
-      <td class="outer-pad" align="center" style="padding:28px 16px;">
+      <td class="outer-pad dm-bg" align="center" style="padding:28px 16px;background-color:#edf0f4;">
 
         <table role="presentation" cellspacing="0" cellpadding="0" border="0"
-               width="100%" style="max-width:600px;background-color:#ffffff;
+               width="100%" class="dm-card" style="max-width:600px;background-color:#ffffff;
                border-radius:12px;overflow:hidden;
                box-shadow:0 4px 20px rgba(0,0,0,0.12);">
 
@@ -1004,10 +1057,10 @@ def build_email_html(
 
           <!-- ── Footer ── -->
           <tr>
-            <td class="ftr-cell"
+            <td class="ftr-cell dm-footer"
                 style="background-color:#f4f6f9;padding:14px 28px;
                        border-top:1px solid #e2e6ea;">
-              <p style="margin:0;font-size:11px;color:#aaaaaa;letter-spacing:0.01em;">
+              <p class="card-meta" style="margin:0;font-size:11px;color:#aaaaaa;letter-spacing:0.01em;">
                 Automated AFL Digest &middot; Generated {generated} &middot; {SCRIPT_VERSION}
               </p>
             </td>
@@ -1046,7 +1099,7 @@ def send_email(html_body: str, subject: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-SCRIPT_VERSION = "v28"
+SCRIPT_VERSION = "v29"
 
 
 def main() -> None:
