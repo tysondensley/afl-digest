@@ -930,13 +930,13 @@ def _section_block(heading: str, content: str) -> str:
           <!-- ── {heading} ── -->
           <tr>
             <td class="sec-head"
-                style="padding:14px 28px 10px 28px;background-color:{bg};
+                style="padding:16px 28px 12px 28px;background-color:{bg};
                        border-top:3px solid {accent};">
               <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                 <tr>
-                  <td class="sec-label--{slug}" style="border-left:4px solid {accent};padding-left:10px;">
-                    <span class="sec-label sec-label--{slug}" style="font-size:11px;font-weight:bold;color:{accent};
-                                 text-transform:uppercase;letter-spacing:0.09em;">{label}</span>
+                  <td class="sec-label--{slug}" style="border-left:5px solid {accent};padding-left:12px;">
+                    <span class="sec-label sec-label--{slug}" style="font-size:22px;font-weight:bold;color:{accent};
+                                 text-transform:uppercase;letter-spacing:0.03em;">{label}</span>
                   </td>
                 </tr>
               </table>
@@ -994,14 +994,14 @@ def build_email_html(
 
     /* ── Dark mode: Apple Mail, iOS Mail, Outlook (new/mobile), some others ── */
     @media (prefers-color-scheme: dark) {{
-      body, .dm-bg          {{ background-color: #17181a !important; }}
-      .dm-card              {{ background-color: #242527 !important;
-                               box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important; }}
-      .sec-head, .sec-body  {{ background-color: #242527 !important;
-                               border-top-color: #3a3a3c !important; }}
-      .dm-footer            {{ background-color: #1f2022 !important;
-                               border-top-color: #3a3a3c !important; }}
-      .divider              {{ border-bottom-color: #3a3a3c !important; }}
+      body, .dm-bg          {{ background-color: #000000 !important; }}
+      .dm-card              {{ background-color: #000000 !important;
+                               box-shadow: none !important; }}
+      .sec-head, .sec-body  {{ background-color: #000000 !important;
+                               border-top-color: #333333 !important; }}
+      .dm-footer            {{ background-color: #000000 !important;
+                               border-top-color: #333333 !important; }}
+      .divider              {{ border-bottom-color: #333333 !important; }}
       .card-title           {{ color: #a9b8ff !important; }}
       .card-snippet         {{ color: #f4f4f6 !important; }}
       .card-meta, .card-meta span {{ color: #cfcfd4 !important; }}
@@ -1015,18 +1015,18 @@ def build_email_html(
     }}
 
     /* ── Dark mode: Outlook.com / older Outlook mobile (attribute-injection) ── */
-    [data-ogsb] body, [data-ogsb] .dm-bg {{ background-color: #17181a !important; }}
-    [data-ogsc] .dm-card                 {{ background-color: #242527 !important; }}
+    [data-ogsb] body, [data-ogsb] .dm-bg {{ background-color: #000000 !important; }}
+    [data-ogsc] .dm-card                 {{ background-color: #000000 !important; }}
     [data-ogsc] .sec-head,
-    [data-ogsc] .sec-body                {{ background-color: #242527 !important; }}
-    [data-ogsc] .dm-footer               {{ background-color: #1f2022 !important; }}
+    [data-ogsc] .sec-body                {{ background-color: #000000 !important; }}
+    [data-ogsc] .dm-footer               {{ background-color: #000000 !important; }}
     [data-ogsc] .card-title              {{ color: #a9b8ff !important; }}
     [data-ogsc] .card-snippet            {{ color: #f4f4f6 !important; }}
     [data-ogsc] .card-meta,
     [data-ogsc] .card-meta span          {{ color: #cfcfd4 !important; }}
     [data-ogsc] .yt-link                 {{ color: #ff8080 !important; }}
     [data-ogsc] .forum-subhead           {{ color: #e6e6e6 !important; }}
-    [data-ogsc] .divider                 {{ border-bottom-color: #3a3a3c !important; }}
+    [data-ogsc] .divider                 {{ border-bottom-color: #333333 !important; }}
   </style>
 </head>
 <body class="dm-bg" style="margin:0;padding:0;background-color:#edf0f4;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
