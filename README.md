@@ -1,6 +1,6 @@
 # AFL Digest
 
-Sends a scheduled AFL news digest email three times a day via GitHub Actions.
+Sends a scheduled AFL news digest email once a day (6:15am) via GitHub Actions.
 
 Each email contains:
 - **News & Transfers** — ~7 bullet-point summary of the latest AFL news from four RSS feeds (trades, injuries, signings, suspensions), filtered and summarised by Claude.
@@ -14,8 +14,6 @@ Each email contains:
 | Label | AEST | AEDT | UTC cron |
 |---|---|---|---|
 | 6am | 06:15 | 07:15\* | `15 20 * * *` |
-| Midday | 12:00 | 13:00\* | `0 2 * * *` |
-| End of Day | 16:30 | 17:30\* | `30 6 * * *` |
 
 \* During daylight saving (AEDT, roughly Oct–Apr) emails arrive 1 hour later than the label implies. GitHub Actions does not support timezone-aware cron, so AEST (UTC+10) is hardcoded.
 

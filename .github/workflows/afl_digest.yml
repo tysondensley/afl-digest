@@ -8,7 +8,7 @@ on:
       time_slot:
         description: 'Time slot label shown in subject line'
         required: false
-        default: 'Midday'
+        default: 'Morning'
         type: choice
         options:
           - Morning

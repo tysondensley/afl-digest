@@ -96,9 +96,9 @@ _AFL_RE = re.compile(
     re.IGNORECASE,
 )
 
-RECIPIENT = "Tyson.Densley@afl.com.au"
+RECIPIENT = "tysondensley@gmail.com"
 
-SLOT_LOOKBACK_HOURS = {"Morning": 9, "Midday": 6, "Afternoon": 5, "Evening": 5}
+SLOT_LOOKBACK_HOURS = {"Morning": 24, "Midday": 6, "Afternoon": 5, "Evening": 5}
 
 
 # ---------------------------------------------------------------------------
